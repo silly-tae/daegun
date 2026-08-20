@@ -1,0 +1,75 @@
+[package]
+name = "daegun"
+version = "1.0.0"
+edition = "2024"
+rust-version = "1.97.1"
+description = "Your all-in-one text engine. Rust, no_std, zero dependencies."
+license = "MIT"
+readme = "README.md"
+homepage = "https://dg.calia.cc"
+repository = "https://github.com/silly-tae/daegun"
+keywords = ["font", "opentype", "truetype", "variable-fonts", "subsetting"]
+categories = ["text-processing", "parser-implementations", "rendering"]
+exclude = ["tasks/", ".gitignore", "assets/", "scripts/"]
+
+[lib]
+path = "src/daegun/lib.rs"
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[features]
+default = ["std"]
+std = []
+threading = ["std"]
+capi = ["threading"]
+
+[[test]]
+name = "api"
+path = "src/daegun/tests/api/main.rs"
+
+[[test]]
+name = "motion"
+path = "src/daegun/tests/motion/main.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
+panic = "abort"
+codegen-units = 1
+overflow-checks = false
+strip = "debuginfo"
+
+[profile.pmu]
+inherits = "release"
+debug = "full"
+strip = "none"
+split-debuginfo = "packed"
+
+[[test]]
+name = "fingerprint"
+path = "src/daecore/tests/fingerprint/main.rs"
+
+[[test]]
+name = "machine"
+path = "src/daecore/tests/machine/main.rs"
+
+[[test]]
+name = "shaper"
+path = "src/daecore/tests/shaper/main.rs"
+
+[[test]]
+name = "type"
+path = "src/daecore/tests/type/main.rs"
+
+[[test]]
+name = "cpu"
+path = "src/daerizer/tests/cpu/main.rs"
+
+[[test]]
+name = "draw"
+path = "src/daerizer/tests/draw/main.rs"
+
+[[test]]
+name = "gpu"
+path = "src/daerizer/tests/gpu/main.rs"

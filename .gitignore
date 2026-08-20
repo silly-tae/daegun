@@ -1,0 +1,15 @@
+target/
+/scripts/.out/
+/scripts/data/unicode/
+.DS_Store
+__pycache__/
+*.pyc
+# Stray SPIR-V at the root. The three the library embeds live under src and are tracked:
+# shaders.sh writes its intermediates to a temp dir, so nothing else lands in the tree.
+/*.spv
+*.zip
+.cargo/credentials
+.cargo/credentials.toml
+
+# Working notes: planning, baselines and findings that are not part of the library.
+tasks/

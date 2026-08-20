@@ -1,0 +1,17 @@
+[package]
+name = "daegun-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+daegun = { path = "../../.." }
+
+[[bin]]
+name = "daegun-fuzz"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 2
+panic = "unwind"
+debug = true
