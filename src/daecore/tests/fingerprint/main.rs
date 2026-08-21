@@ -253,7 +253,7 @@ fn subset_fonts() {
 }
 
 #[test]
-fn colour_glyphs() {
+fn color_glyphs() {
     const COLR: &[&str] = &[
         "colr-v1-test-glyphs/test_glyphs.ttf",
         "colr-v1-test-glyphs/test_glyphs_variable.ttf",
@@ -286,7 +286,7 @@ fn colour_glyphs() {
             }
         }
     }
-    check("colour glyphs", f.done(), 0x34ed_518f_2325_865b);
+    check("color glyphs", f.done(), 0x34ed_518f_2325_865b);
 }
 
 #[test]

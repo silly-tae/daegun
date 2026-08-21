@@ -7,6 +7,8 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::ffi::c_char;
 
+use super::backend::SurfaceFormat;
+pub use super::backend::SurfaceFormat as Format;
 use super::{GpuBatch, GlyphInstance, SubpixelParams};
 use super::vulkan as vk;
 
@@ -100,21 +102,23 @@ struct Suitable {
 
 struct Built {
     device: vk::Device,
+    physical: vk::PhysicalDevice,
+    queue_family: u32,
     max_target: [u32; 2],
     queue: vk::Queue,
     name: String,
     device_type: i32,
-    render_pass: vk::RenderPass,
+    rgba: Formatted,
+    bgra: Formatted,
     command: OneShot,
     memory: vk::PhysicalDeviceMemoryProperties,
     set_layout: vk::DescriptorSetLayout,
     pipeline_layout: vk::PipelineLayout,
-    grayscale: vk::Pipeline,
-    subpixel: Option<vk::Pipeline>,
     descriptor_pool: vk::DescriptorPool,
     frames: [Frame; FRAMES_IN_FLIGHT],
     ifns: InstanceFns,
     dfns: DeviceFns,
+    owns_device: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -178,18 +182,19 @@ struct DeviceFns {
 pub struct Renderer {
     _library: vk::Library,
     instance: vk::Instance,
+    physical: vk::PhysicalDevice,
+    queue_family: u32,
     device: vk::Device,
     queue: vk::Queue,
     device_name: String,
     device_type: i32,
     max_target: [u32; 2],
-    render_pass: vk::RenderPass,
+    rgba: Formatted,
+    bgra: Formatted,
     command: core::cell::RefCell<OneShot>,
     memory: vk::PhysicalDeviceMemoryProperties,
     set_layout: vk::DescriptorSetLayout,
     pipeline_layout: vk::PipelineLayout,
-    grayscale: vk::Pipeline,
-    subpixel: Option<vk::Pipeline>,
     descriptor_pool: vk::DescriptorPool,
     // Per-draw data cannot be shared between slots: a draw still running reads its own instance
     // buffer and descriptor set, so writing either for the next draw changes what it sees.
@@ -197,9 +202,40 @@ pub struct Renderer {
     next_frame: core::cell::Cell<usize>,
     ifns: InstanceFns,
     dfns: DeviceFns,
+    owns_device: bool,
+}
+
+// Two passes because the load op is baked into a `VkRenderPass`, and one pipeline pair because
+// pipeline compatibility turns on attachment format and sample count, never on load ops.
+struct Formatted {
+    clear_pass: vk::RenderPass,
+    load_pass: vk::RenderPass,
+    grayscale: vk::Pipeline,
+    subpixel: Option<vk::Pipeline>,
+}
+
+impl Formatted {
+    fn pass_for(&self, clear: Option<crate::daerizer::Rgba>) -> vk::RenderPass {
+        if clear.is_some() { self.clear_pass } else { self.load_pass }
+    }
+}
+
+impl Formatted {
+    unsafe fn destroy(&self, d: &DeviceFns, device: vk::Device) {
+        unsafe {
+            if let Some(p) = self.subpixel {
+                (d.destroy_pipeline)(device, p, core::ptr::null());
+            }
+            (d.destroy_pipeline)(device, self.grayscale, core::ptr::null());
+            (d.destroy_render_pass)(device, self.load_pass, core::ptr::null());
+            (d.destroy_render_pass)(device, self.clear_pass, core::ptr::null());
+        }
+    }
 }
 
 const FRAMES_IN_FLIGHT: usize = 3;
+
+const TRANSPARENT: crate::daerizer::Rgba = crate::daerizer::Rgba { r: 0, g: 0, b: 0, a: 0 };
 
 struct Frame {
     command: vk::CommandBuffer,
@@ -294,27 +330,7 @@ impl Renderer {
         check("vkCreateInstance", created)?;
 
         match Self::finish(&library, get_proc, instance) {
-            Ok(b) => Ok(Renderer {
-                descriptor_pool: b.descriptor_pool,
-                frames: core::cell::RefCell::new(b.frames),
-                next_frame: core::cell::Cell::new(0),
-                _library: library,
-                instance,
-                device: b.device,
-                queue: b.queue,
-                device_name: b.name,
-                device_type: b.device_type,
-                max_target: b.max_target,
-                render_pass: b.render_pass,
-                command: core::cell::RefCell::new(b.command),
-                memory: b.memory,
-                set_layout: b.set_layout,
-                pipeline_layout: b.pipeline_layout,
-                grayscale: b.grayscale,
-                subpixel: b.subpixel,
-                ifns: b.ifns,
-                dfns: b.dfns,
-            }),
+            Ok(b) => Ok(Self::wrap(library, instance, b)),
             Err(e) => {
                 if let Some(destroy) =
                     unsafe { vk::load::<vk::PfnDestroyInstance>(get_proc, instance, c"vkDestroyInstance") }
@@ -326,18 +342,78 @@ impl Renderer {
         }
     }
 
-    fn finish(
-        _library: &vk::Library,
+    fn wrap(library: vk::Library, instance: vk::Instance, b: Built) -> Renderer {
+        Renderer {
+            descriptor_pool: b.descriptor_pool,
+            frames: core::cell::RefCell::new(b.frames),
+            next_frame: core::cell::Cell::new(0),
+            _library: library,
+            instance,
+            physical: b.physical,
+            queue_family: b.queue_family,
+            device: b.device,
+            queue: b.queue,
+            device_name: b.name,
+            device_type: b.device_type,
+            max_target: b.max_target,
+            rgba: b.rgba,
+            bgra: b.bgra,
+            command: core::cell::RefCell::new(b.command),
+            memory: b.memory,
+            set_layout: b.set_layout,
+            pipeline_layout: b.pipeline_layout,
+            ifns: b.ifns,
+            dfns: b.dfns,
+            owns_device: b.owns_device,
+        }
+    }
+
+    // The handles behind this renderer, for building a swapchain on the device daegun made. They
+    // belong to the renderer and die with it, so nothing built on them may outlive it.
+    pub unsafe fn handles(&self) -> (vk::Instance, vk::PhysicalDevice, vk::Device, u32) {
+        (self.instance, self.physical, self.device, self.queue_family)
+    }
+
+    // Every handle must be live and belong together, and daegun destroys neither device nor
+    // instance, so the caller outlives the renderer. `dual_src_blend` is what the caller enabled,
+    // not what the hardware supports: daegun cannot tell them apart, and without it there is no
+    // subpixel pipeline.
+    pub unsafe fn from_device(
+        instance: vk::Instance,
+        physical: vk::PhysicalDevice,
+        device: vk::Device,
+        queue_family: u32,
+        dual_src_blend: bool,
+    ) -> Result<Renderer, Error> {
+        shader_words(Mode::Grayscale)?;
+        shader_words(Mode::Subpixel)?;
+        if instance.is_null() || device.is_null() {
+            return Err(Error::NoDevice);
+        }
+        let library = vk::Library::open().ok_or(Error::NoDevice)?;
+        let get_proc = library.get_instance_proc_addr().ok_or(Error::NoDevice)?;
+        let ifns = Self::instance_fns(get_proc, instance)?;
+
+        let mut found = Self::suitable(&ifns, physical).ok_or(Error::NoDevice)?;
+        found.family = queue_family;
+        found.dual_src_blend = dual_src_blend && found.dual_src_blend;
+
+        let b = Self::build_on(get_proc, instance, ifns, found, device, false)?;
+        Ok(Self::wrap(library, instance, b))
+    }
+
+    // Lifted out so an adopted instance loads the same entry points as one daegun made.
+    fn instance_fns(
         get_proc: vk::PfnGetInstanceProcAddr,
         instance: vk::Instance,
-    ) -> Result<Built, Error> {
+    ) -> Result<InstanceFns, Error> {
         macro_rules! ifn {
             ($t:ty, $name:literal) => {
                 unsafe { vk::load::<$t>(get_proc, instance, $name) }
                     .ok_or(Error::MissingEntryPoint(stringify!($name)))?
             };
         }
-        let ifns = InstanceFns {
+        Ok(InstanceFns {
             destroy_instance: ifn!(vk::PfnDestroyInstance, c"vkDestroyInstance"),
             enumerate_physical_devices: ifn!(
                 vk::PfnEnumeratePhysicalDevices,
@@ -364,7 +440,15 @@ impl Renderer {
                 c"vkGetPhysicalDeviceMemoryProperties"
             ),
             create_device: ifn!(vk::PfnCreateDevice, c"vkCreateDevice"),
-        };
+        })
+    }
+
+    fn finish(
+        _library: &vk::Library,
+        get_proc: vk::PfnGetInstanceProcAddr,
+        instance: vk::Instance,
+    ) -> Result<Built, Error> {
+        let ifns = Self::instance_fns(get_proc, instance)?;
 
         let devices = enumerate(|count, data| {
             unsafe { (ifns.enumerate_physical_devices)(instance, count, data) }
@@ -426,6 +510,27 @@ impl Renderer {
             (ifns.create_device)(physical, &device_info, core::ptr::null(), &mut device)
         })?;
 
+        Self::build_on(
+            get_proc,
+            instance,
+            ifns,
+            Suitable { pd: physical, family: queue_family, name, device_type, dual_src_blend, max_target },
+            device,
+            true,
+        )
+    }
+
+    // Everything past device creation, shared by the device daegun makes and one it is handed.
+    fn build_on(
+        get_proc: vk::PfnGetInstanceProcAddr,
+        instance: vk::Instance,
+        ifns: InstanceFns,
+        found: Suitable,
+        device: vk::Device,
+        owns_device: bool,
+    ) -> Result<Built, Error> {
+        let Suitable { pd: physical, family: queue_family, name, device_type, dual_src_blend, max_target } =
+            found;
         macro_rules! dfn {
             ($t:ty, $name:literal) => {
                 unsafe { vk::load::<$t>(get_proc, instance, $name) }
@@ -492,11 +597,10 @@ impl Renderer {
         let mut queue: vk::Queue = core::ptr::null_mut();
         unsafe { (dfns.get_device_queue)(device, queue_family, 0, &mut queue) };
 
-        let extras = Self::device_objects(&dfns, device, queue_family);
-        let (render_pass, command) = match extras {
+        let command = match Self::one_shot_objects(&dfns, device, queue_family) {
             Ok(v) => v,
             Err(e) => {
-                unsafe { (dfns.destroy_device)(device, core::ptr::null()) };
+                unsafe { Self::drop_device(&dfns, device, owns_device) };
                 return Err(e);
             }
         };
@@ -504,45 +608,67 @@ impl Renderer {
         let mut memory: vk::PhysicalDeviceMemoryProperties = unsafe { core::mem::zeroed() };
         unsafe { (ifns.get_physical_device_memory_properties)(physical, &mut memory) };
 
-        let pipes = match Self::pipelines(&dfns, device, render_pass, dual_src_blend) {
+        let (set_layout, pipeline_layout) = match Self::layouts(&dfns, device) {
             Ok(v) => v,
             Err(e) => {
                 unsafe {
                     (dfns.destroy_fence)(device, command.fence, core::ptr::null());
                     (dfns.destroy_command_pool)(device, command.pool, core::ptr::null());
-                    (dfns.destroy_render_pass)(device, render_pass, core::ptr::null());
-                    (dfns.destroy_device)(device, core::ptr::null());
+                    Self::drop_device(&dfns, device, owns_device);
                 }
                 return Err(e);
             }
         };
-        let (set_layout, pipeline_layout, grayscale, subpixel) = pipes;
 
-        let frames = match Self::frames(&dfns, device, &memory, set_layout, command.pool) {
+        let mut made: alloc::vec::Vec<Formatted> = alloc::vec::Vec::new();
+        let mut failure = None;
+        for format in [vk::FORMAT_R8G8B8A8_UNORM, vk::FORMAT_B8G8R8A8_UNORM] {
+            match Self::formatted_for(&dfns, device, pipeline_layout, format, dual_src_blend) {
+                Ok(f) => made.push(f),
+                Err(e) => {
+                    failure = Some(e);
+                    break;
+                }
+            }
+        }
+        let frames = match failure {
+            None => Self::frames(&dfns, device, &memory, set_layout, command.pool),
+            Some(e) => Err(e),
+        };
+        let (descriptor_pool, frames) = match frames {
             Ok(v) => v,
             Err(e) => {
                 unsafe {
-                    if let Some(p) = subpixel {
-                        (dfns.destroy_pipeline)(device, p, core::ptr::null());
+                    for f in &made {
+                        f.destroy(&dfns, device);
                     }
-                    (dfns.destroy_pipeline)(device, grayscale, core::ptr::null());
                     (dfns.destroy_pipeline_layout)(device, pipeline_layout, core::ptr::null());
                     (dfns.destroy_descriptor_set_layout)(device, set_layout, core::ptr::null());
                     (dfns.destroy_fence)(device, command.fence, core::ptr::null());
                     (dfns.destroy_command_pool)(device, command.pool, core::ptr::null());
-                    (dfns.destroy_render_pass)(device, render_pass, core::ptr::null());
-                    (dfns.destroy_device)(device, core::ptr::null());
+                    Self::drop_device(&dfns, device, owns_device);
                 }
                 return Err(e);
             }
         };
-        let (descriptor_pool, frames) = frames;
+        let mut made = made.into_iter();
+        let (rgba, bgra) = match (made.next(), made.next()) {
+            (Some(a), Some(b)) => (a, b),
+            _ => unreachable!("both formats are built or the loop breaks"),
+        };
 
         Ok(Built {
-            device, queue, name, device_type, render_pass, command, memory, max_target,
-            set_layout, pipeline_layout, grayscale, subpixel, descriptor_pool, frames, ifns, dfns,
+            device, physical, queue_family, queue, name, device_type, rgba, bgra, command, memory, max_target,
+            set_layout, pipeline_layout, descriptor_pool, frames, ifns, dfns, owns_device,
         })
     }
+
+    unsafe fn drop_device(dfns: &DeviceFns, device: vk::Device, owns_device: bool) {
+        if owns_device {
+            unsafe { (dfns.destroy_device)(device, core::ptr::null()) };
+        }
+    }
+
 
     fn frames(
         d: &DeviceFns,
@@ -668,12 +794,12 @@ impl Renderer {
         Ok((descriptor_pool, frames))
     }
 
-    fn pipelines(
+    // The descriptor and pipeline layouts describe bindings, not attachments, so one pair serves
+    // every surface format.
+    fn layouts(
         d: &DeviceFns,
         device: vk::Device,
-        render_pass: vk::RenderPass,
-        dual_src_blend: bool,
-    ) -> Result<(vk::DescriptorSetLayout, vk::PipelineLayout, vk::Pipeline, Option<vk::Pipeline>), Error> {
+    ) -> Result<(vk::DescriptorSetLayout, vk::PipelineLayout), Error> {
         let mut bindings = [vk::DescriptorSetLayoutBinding {
             binding: 0,
             descriptor_type: vk::DESCRIPTOR_TYPE_STORAGE_BUFFER,
@@ -716,35 +842,63 @@ impl Renderer {
             return Err(e);
         }
 
+        Ok((set_layout, pipeline_layout))
+    }
+
+    // A pipeline is tied to its render pass only through attachment format and sample count, so one
+    // pair per format covers every pass compatible with it.
+    fn pipelines_for(
+        d: &DeviceFns,
+        device: vk::Device,
+        render_pass: vk::RenderPass,
+        pipeline_layout: vk::PipelineLayout,
+        dual_src_blend: bool,
+    ) -> Result<(vk::Pipeline, Option<vk::Pipeline>), Error> {
         let build = |mode: Mode| -> Result<vk::Pipeline, Error> {
             Self::one_pipeline(d, device, render_pass, pipeline_layout, mode)
         };
-        let grayscale = match build(Mode::Grayscale) {
-            Ok(p) => p,
-            Err(e) => {
-                unsafe {
-                    (d.destroy_pipeline_layout)(device, pipeline_layout, core::ptr::null());
-                    (d.destroy_descriptor_set_layout)(device, set_layout, core::ptr::null());
-                }
-                return Err(e);
-            }
-        };
+        let grayscale = build(Mode::Grayscale)?;
         let subpixel = if dual_src_blend {
             match build(Mode::Subpixel) {
                 Ok(p) => Some(p),
                 Err(e) => {
-                    unsafe {
-                        (d.destroy_pipeline)(device, grayscale, core::ptr::null());
-                        (d.destroy_pipeline_layout)(device, pipeline_layout, core::ptr::null());
-                        (d.destroy_descriptor_set_layout)(device, set_layout, core::ptr::null());
-                    }
+                    unsafe { (d.destroy_pipeline)(device, grayscale, core::ptr::null()) };
                     return Err(e);
                 }
             }
         } else {
             None
         };
-        Ok((set_layout, pipeline_layout, grayscale, subpixel))
+        Ok((grayscale, subpixel))
+    }
+
+    fn formatted_for(
+        d: &DeviceFns,
+        device: vk::Device,
+        pipeline_layout: vk::PipelineLayout,
+        format: i32,
+        dual_src_blend: bool,
+    ) -> Result<Formatted, Error> {
+        let clear_pass = Self::render_pass_for(d, device, format, vk::ATTACHMENT_LOAD_OP_CLEAR)?;
+        let load_pass = match Self::render_pass_for(d, device, format, vk::ATTACHMENT_LOAD_OP_LOAD) {
+            Ok(p) => p,
+            Err(e) => {
+                unsafe { (d.destroy_render_pass)(device, clear_pass, core::ptr::null()) };
+                return Err(e);
+            }
+        };
+        match Self::pipelines_for(d, device, clear_pass, pipeline_layout, dual_src_blend) {
+            Ok((grayscale, subpixel)) => {
+                Ok(Formatted { clear_pass, load_pass, grayscale, subpixel })
+            }
+            Err(e) => {
+                unsafe {
+                    (d.destroy_render_pass)(device, load_pass, core::ptr::null());
+                    (d.destroy_render_pass)(device, clear_pass, core::ptr::null());
+                }
+                Err(e)
+            }
+        }
     }
 
     fn one_pipeline(
@@ -927,20 +1081,25 @@ impl Renderer {
         Ok(pipeline)
     }
 
-    fn device_objects(
+    fn render_pass_for(
         dfns: &DeviceFns,
         device: vk::Device,
-        queue_family: u32,
-    ) -> Result<(vk::RenderPass, OneShot), Error> {
+        format: i32,
+        load_op: i32,
+    ) -> Result<vk::RenderPass, Error> {
         let attachment = vk::AttachmentDescription {
             flags: 0,
-            format: vk::FORMAT_R8G8B8A8_UNORM,
+            format,
             samples: vk::SAMPLE_COUNT_1_BIT,
-            load_op: vk::ATTACHMENT_LOAD_OP_CLEAR,
+            load_op,
             store_op: vk::ATTACHMENT_STORE_OP_STORE,
             stencil_load_op: vk::ATTACHMENT_LOAD_OP_DONT_CARE,
             stencil_store_op: vk::ATTACHMENT_STORE_OP_DONT_CARE,
-            initial_layout: vk::IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            initial_layout: if load_op == vk::ATTACHMENT_LOAD_OP_CLEAR {
+                vk::IMAGE_LAYOUT_UNDEFINED
+            } else {
+                vk::IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+            },
             final_layout: vk::IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
         };
         let color = vk::AttachmentReference {
@@ -975,10 +1134,14 @@ impl Renderer {
             (dfns.create_render_pass)(device, &rp_info, core::ptr::null(), &mut render_pass)
         })?;
 
-        let cleanup_rp = || {
-            unsafe { (dfns.destroy_render_pass)(device, render_pass, core::ptr::null()) };
-        };
+        Ok(render_pass)
+    }
 
+    fn one_shot_objects(
+        dfns: &DeviceFns,
+        device: vk::Device,
+        queue_family: u32,
+    ) -> Result<OneShot, Error> {
         let pool_info = vk::CommandPoolCreateInfo {
             s_type: vk::STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
             p_next: core::ptr::null(),
@@ -986,12 +1149,9 @@ impl Renderer {
             queue_family_index: queue_family,
         };
         let mut pool = vk::NULL_HANDLE;
-        if let Err(e) = check("vkCreateCommandPool", unsafe {
+        check("vkCreateCommandPool", unsafe {
             (dfns.create_command_pool)(device, &pool_info, core::ptr::null(), &mut pool)
-        }) {
-            cleanup_rp();
-            return Err(e);
-        }
+        })?;
 
         let alloc = vk::CommandBufferAllocateInfo {
             s_type: vk::STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
@@ -1011,11 +1171,10 @@ impl Renderer {
             .max(unsafe { (dfns.create_fence)(device, &fence_info, core::ptr::null(), &mut fence) });
         if let Err(e) = check("vkAllocateCommandBuffers or vkCreateFence", r) {
             unsafe { (dfns.destroy_command_pool)(device, pool, core::ptr::null()) };
-            cleanup_rp();
             return Err(e);
         }
 
-        Ok((render_pass, OneShot { pool, buffer, fence }))
+        Ok(OneShot { pool, buffer, fence })
     }
 
     fn suitable(ifns: &InstanceFns, pd: vk::PhysicalDevice) -> Option<Suitable> {
@@ -1051,7 +1210,7 @@ impl Renderer {
     }
 
     pub fn supports_subpixel(&self) -> bool {
-        self.subpixel.is_some()
+        self.rgba.subpixel.is_some()
     }
 
     pub fn profile(&self) -> crate::daerizer::draw::DeviceProfile {
@@ -1099,7 +1258,108 @@ impl Renderer {
         Ok(())
     }
 
+    fn formatted(&self, format: SurfaceFormat) -> &Formatted {
+        match format {
+            SurfaceFormat::Rgba8Unorm => &self.rgba,
+            SurfaceFormat::Bgra8Unorm => &self.bgra,
+        }
+    }
+
+    // `image` must be live on this device with color-attachment usage and the given format. daegun
+    // builds a view and framebuffer over it and destroys only those. A clearing draw takes any
+    // layout; loading needs `COLOR_ATTACHMENT_OPTIMAL`, and daegun leaves it there, so transitioning
+    // a swapchain image before presenting stays the caller's.
+    pub unsafe fn target_from_image(
+        &self,
+        image: vk::Image,
+        width: u32,
+        height: u32,
+        format: SurfaceFormat,
+    ) -> Result<Target<'_>, Error> {
+        if image == vk::NULL_HANDLE || width == 0 || height == 0 {
+            return Err(Error::BadTarget);
+        }
+        let vk_format = match format {
+            SurfaceFormat::Rgba8Unorm => vk::FORMAT_R8G8B8A8_UNORM,
+            SurfaceFormat::Bgra8Unorm => vk::FORMAT_B8G8R8A8_UNORM,
+        };
+        let d = &self.dfns;
+
+        let mut view = vk::NULL_HANDLE;
+        let view_info = vk::ImageViewCreateInfo {
+            s_type: vk::STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            p_next: core::ptr::null(),
+            flags: 0,
+            image,
+            view_type: vk::IMAGE_VIEW_TYPE_2D,
+            format: vk_format,
+            components: vk::ComponentMapping {
+                r: vk::COMPONENT_SWIZZLE_IDENTITY,
+                g: vk::COMPONENT_SWIZZLE_IDENTITY,
+                b: vk::COMPONENT_SWIZZLE_IDENTITY,
+                a: vk::COMPONENT_SWIZZLE_IDENTITY,
+            },
+            subresource_range: COLOR_RANGE,
+        };
+        check("vkCreateImageView", unsafe {
+            (d.create_image_view)(self.device, &view_info, core::ptr::null(), &mut view)
+        })?;
+
+        let mut framebuffer = vk::NULL_HANDLE;
+        let fb_info = vk::FramebufferCreateInfo {
+            s_type: vk::STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+            p_next: core::ptr::null(),
+            flags: 0,
+            render_pass: self.formatted(format).clear_pass,
+            attachment_count: 1,
+            p_attachments: &view,
+            width,
+            height,
+            layers: 1,
+        };
+        if let Err(e) = check("vkCreateFramebuffer", unsafe {
+            (d.create_framebuffer)(self.device, &fb_info, core::ptr::null(), &mut framebuffer)
+        }) {
+            unsafe { (d.destroy_image_view)(self.device, view, core::ptr::null()) };
+            return Err(e);
+        }
+
+        Ok(Target {
+            borrowed: true,
+            format,
+            clear: Some(TRANSPARENT),
+            image,
+            image_memory: vk::NULL_HANDLE,
+            view,
+            framebuffer,
+            staging: vk::NULL_HANDLE,
+            staging_memory: vk::NULL_HANDLE,
+            mapped: core::ptr::null_mut(),
+            width,
+            height,
+            device: self.device,
+            dfns: self.dfns,
+            pending: None,
+            renderer: core::marker::PhantomData,
+        })
+    }
+
     pub fn target(&self, width: u32, height: u32) -> Result<Target<'_>, Error> {
+        self.target_with_format(width, height, SurfaceFormat::Rgba8Unorm)
+    }
+
+    // An offscreen target in the caller's byte order, for compositing into a surface that is not
+    // daegun's without a swizzle on the way out.
+    pub fn target_with_format(
+        &self,
+        width: u32,
+        height: u32,
+        format: SurfaceFormat,
+    ) -> Result<Target<'_>, Error> {
+        let vk_format = match format {
+            SurfaceFormat::Rgba8Unorm => vk::FORMAT_R8G8B8A8_UNORM,
+            SurfaceFormat::Bgra8Unorm => vk::FORMAT_B8G8R8A8_UNORM,
+        };
         if width == 0
             || height == 0
             || width > self.max_target[0]
@@ -1113,7 +1373,7 @@ impl Renderer {
             p_next: core::ptr::null(),
             flags: 0,
             image_type: vk::IMAGE_TYPE_2D,
-            format: vk::FORMAT_R8G8B8A8_UNORM,
+            format: vk_format,
             extent: vk::Extent3D { width, height, depth: 1 },
             mip_levels: 1,
             array_layers: 1,
@@ -1160,7 +1420,7 @@ impl Renderer {
             flags: 0,
             image,
             view_type: vk::IMAGE_VIEW_TYPE_2D,
-            format: vk::FORMAT_R8G8B8A8_UNORM,
+            format: vk_format,
             components: vk::ComponentMapping {
                 r: vk::COMPONENT_SWIZZLE_IDENTITY,
                 g: vk::COMPONENT_SWIZZLE_IDENTITY,
@@ -1179,7 +1439,7 @@ impl Renderer {
             s_type: vk::STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
             p_next: core::ptr::null(),
             flags: 0,
-            render_pass: self.render_pass,
+            render_pass: self.formatted(format).clear_pass,
             attachment_count: 1,
             p_attachments: &view,
             width,
@@ -1232,6 +1492,9 @@ impl Renderer {
         unsafe { core::ptr::write_bytes(mapped.cast::<u8>(), 0, bytes as usize) };
 
         let target = Target {
+            borrowed: false,
+            format,
+            clear: Some(TRANSPARENT),
             image,
             image_memory,
             view,
@@ -1373,8 +1636,8 @@ impl Renderer {
         }
 
         let pipeline = match mode {
-            Mode::Grayscale => self.grayscale,
-            Mode::Subpixel => match self.subpixel {
+            Mode::Grayscale => self.formatted(target.format).grayscale,
+            Mode::Subpixel => match self.formatted(target.format).subpixel {
                 Some(p) => p,
                 None => {
                     return Err(Error::Unsupported(
@@ -1387,11 +1650,18 @@ impl Renderer {
             offset: vk::Offset2D { x: 0, y: 0 },
             extent: vk::Extent2D { width: target.width, height: target.height },
         };
-        let clear = vk::ClearValue { color: vk::ClearColorValue { float32: [0.0; 4] } };
+        let clear = vk::ClearValue {
+            color: vk::ClearColorValue {
+                float32: match target.clear {
+                    Some(c) => [c.r, c.g, c.b, c.a].map(|v| f32::from(v) / 255.0),
+                    None => [0.0; 4],
+                },
+            },
+        };
         let pass = vk::RenderPassBeginInfo {
             s_type: vk::STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
             p_next: core::ptr::null(),
-            render_pass: self.render_pass,
+            render_pass: self.formatted(target.format).pass_for(target.clear),
             framebuffer: target.framebuffer,
             render_area: area,
             clear_value_count: 1,
@@ -1467,6 +1737,11 @@ impl Renderer {
 
     pub fn read_pixels<'t>(&self, target: &'t mut Target<'_>) -> Result<&'t [u8], Error> {
         if target.device != self.device || target.width == 0 || target.height == 0 {
+            return Err(Error::BadTarget);
+        }
+        // A borrowed image has no staging buffer to copy into, and a caller rendering into its own
+        // swapchain does not want the copy anyway.
+        if target.borrowed {
             return Err(Error::BadTarget);
         }
         self.wait(target)?;
@@ -1808,10 +2083,8 @@ impl Drop for Renderer {
         unsafe {
             (self.dfns.device_wait_idle)(self.device);
             (self.dfns.destroy_descriptor_pool)(self.device, self.descriptor_pool, core::ptr::null());
-            if let Some(p) = self.subpixel {
-                (self.dfns.destroy_pipeline)(self.device, p, core::ptr::null());
-            }
-            (self.dfns.destroy_pipeline)(self.device, self.grayscale, core::ptr::null());
+            self.bgra.destroy(&self.dfns, self.device);
+            self.rgba.destroy(&self.dfns, self.device);
             (self.dfns.destroy_pipeline_layout)(self.device, self.pipeline_layout, core::ptr::null());
             (self.dfns.destroy_descriptor_set_layout)(self.device, self.set_layout, core::ptr::null());
             (self.dfns.destroy_fence)(self.device, cmd.fence, core::ptr::null());
@@ -1819,16 +2092,17 @@ impl Drop for Renderer {
                 (self.dfns.destroy_fence)(self.device, f.fence, core::ptr::null());
             }
             (self.dfns.destroy_command_pool)(self.device, cmd.pool, core::ptr::null());
-            (self.dfns.destroy_render_pass)(self.device, self.render_pass, core::ptr::null());
         }
         for f in frames.iter() {
             for b in [&f.instances, &f.subpixel, &f.projection] {
                 free_buffer(&self.dfns, self.device, b);
             }
         }
-        unsafe {
-            (self.dfns.destroy_device)(self.device, core::ptr::null());
-            (self.ifns.destroy_instance)(self.instance, core::ptr::null());
+        if self.owns_device {
+            unsafe {
+                (self.dfns.destroy_device)(self.device, core::ptr::null());
+                (self.ifns.destroy_instance)(self.instance, core::ptr::null());
+            }
         }
     }
 }
@@ -1843,6 +2117,11 @@ fn zeroed_vec<T>(n: usize) -> Vec<T> {
 }
 
 pub struct Target<'r> {
+    // A borrowed image is the caller's: daegun makes the view and framebuffer over it and destroys
+    // only those.
+    borrowed: bool,
+    format: SurfaceFormat,
+    clear: Option<crate::daerizer::Rgba>,
     image: vk::Image,
     image_memory: vk::DeviceMemory,
     view: vk::ImageView,
@@ -1860,24 +2139,42 @@ pub struct Target<'r> {
 
 impl Drop for Target<'_> {
     fn drop(&mut self) {
-        if self.mapped.is_null() {
+        // The framebuffer is the sentinel rather than `mapped`, because a borrowed target has no
+        // mapping and would otherwise skip its own view and framebuffer.
+        if self.framebuffer == vk::NULL_HANDLE {
             return;
         }
         unsafe {
             (self.dfns.device_wait_idle)(self.device);
             (self.dfns.destroy_framebuffer)(self.device, self.framebuffer, core::ptr::null());
             (self.dfns.destroy_image_view)(self.device, self.view, core::ptr::null());
-            (self.dfns.destroy_image)(self.device, self.image, core::ptr::null());
-            (self.dfns.free_memory)(self.device, self.image_memory, core::ptr::null());
-            (self.dfns.unmap_memory)(self.device, self.staging_memory);
-            (self.dfns.destroy_buffer)(self.device, self.staging, core::ptr::null());
-            (self.dfns.free_memory)(self.device, self.staging_memory, core::ptr::null());
+            if !self.borrowed {
+                (self.dfns.destroy_image)(self.device, self.image, core::ptr::null());
+                (self.dfns.free_memory)(self.device, self.image_memory, core::ptr::null());
+                (self.dfns.unmap_memory)(self.device, self.staging_memory);
+                (self.dfns.destroy_buffer)(self.device, self.staging, core::ptr::null());
+                (self.dfns.free_memory)(self.device, self.staging_memory, core::ptr::null());
+            }
         }
+        self.framebuffer = vk::NULL_HANDLE;
         self.mapped = core::ptr::null_mut();
     }
 }
 
 impl Target<'_> {
+    pub fn format(&self) -> SurfaceFormat {
+        self.format
+    }
+
+    pub fn clear(&self) -> Option<crate::daerizer::Rgba> {
+        self.clear
+    }
+
+    // `None` keeps what the target already holds instead of clearing.
+    pub fn set_clear(&mut self, clear: Option<crate::daerizer::Rgba>) {
+        self.clear = clear;
+    }
+
     pub fn width(&self) -> u32 {
         self.width
     }

@@ -405,7 +405,7 @@ def main():
         f.write("// Regenerate with: python3 scripts/tools/gen/unicode-tables.py\n")
         f.write("// Source: Unicode Character Database {}.{}.{}\n".format(*VERSION))
         f.write("//\n")
-        f.write("// The notice below is required by the licence the data is used under, and is\n")
+        f.write("// The notice below is required by the license the data is used under, and is\n")
         f.write("// reproduced verbatim from scripts/data/unicode/UnicodeLicense.txt. It covers the\n")
         f.write("// Unicode data and the tables derived from it, not daegun's own code, which is\n")
         f.write("// MIT (see LICENSE).\n")

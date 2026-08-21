@@ -7,7 +7,7 @@ GPU="src/daerizer/src/daegpu/ffi.rs src/daerizer/src/daegpu/vk.rs\
  src/daerizer/src/daegpu/d3d11.rs src/daerizer/src/daegpu/d3d12.rs"
 REEXPORTS="src/daegun/lib.rs src/daegun/api/*.rs src/daegun/text/*.rs"
 
-modules=" binding bytes class eval format paint shape state "
+modules=" binding bytes class eval format paint shape state gpu metal vulkan d3d11 d3d12 "
 
 rust=$(awk '
   FILENAME != last { last = FILENAME; delete private; depth = 0; skip = 0 }
@@ -110,7 +110,9 @@ renamed=" from_bytes from_ttc with_layout with_gamma with_transform with_hinting
  channels grayscale horizontal is_grayscale oversample taps unfiltered weight_rows\
  geometry target shader from_vec push ops "
 
-unreachable=" append_prebuilt build_glyph remember slot_for "
+# `fade` and `opaque` build an Rgba, which C passes as four plain bytes – there is nothing
+# for an entry point to do that the caller cannot write inline.
+unreachable=" append_prebuilt build_glyph remember slot_for fade opaque "
 
 # The only names allowed to pass on a header declaration alone. Anything else declared but not
 # built is a deleted implementation, not a platform gate, and must fail.
@@ -154,8 +156,23 @@ if [ "${1:-}" = "--list" ] && [ -n "$missing" ]; then
   echo "$missing" | tr ' ' '\n' | grep -v '^$' | sed 's/^/    /'
 fi
 
-if [ -n "$missing" ] || [ -n "$loose" ]; then
+# The pass above pools all four backends into one name set, so a call present on one counts as
+# covered for all of them – which is how Metal's adoption and borrow went missing while the total
+# still read 100%. Adoption and surfaces are per backend, so they get their own pass over whichever
+# backends were compiled in here.
+surface=""
+for b in metal vulkan d3d11 d3d12; do
+  echo "$c" | grep -qx "${b}_renderer_new" || continue
+  for call in renderer_from_device target_with_format target_set_clear; do
+    echo "$c" | grep -qx "${b}_${call}" || surface="$surface daegun_${b}_${call}"
+  done
+  echo "$c" | grep -qE "^${b}_target_from_(texture|image|drawable)$" \
+    || surface="$surface daegun_${b}_target_from_*"
+done
+
+if [ -n "$missing" ] || [ -n "$loose" ] || [ -n "$surface" ]; then
   [ -n "$missing" ] && printf 'not reachable from C:%s\n' "$missing"
   [ -n "$loose" ] && printf 'matched only loosely, so not confirmed:%s\n' "$loose"
+  [ -n "$surface" ] && printf 'backend surface API not reachable from C:%s\n' "$surface"
   exit 1
 fi

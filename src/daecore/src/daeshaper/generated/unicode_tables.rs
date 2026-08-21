@@ -2,7 +2,7 @@
 // Regenerate with: python3 scripts/tools/gen/unicode-tables.py
 // Source: Unicode Character Database 17.0.0
 //
-// The notice below is required by the licence the data is used under, and is
+// The notice below is required by the license the data is used under, and is
 // reproduced verbatim from scripts/data/unicode/UnicodeLicense.txt. It covers the
 // Unicode data and the tables derived from it, not daegun's own code, which is
 // MIT (see LICENSE).

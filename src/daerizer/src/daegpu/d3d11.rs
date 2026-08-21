@@ -9,6 +9,18 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::ffi::{CStr, c_void};
 
+use super::backend::SurfaceFormat;
+pub use super::backend::SurfaceFormat as Format;
+
+const TRANSPARENT: crate::daerizer::Rgba = crate::daerizer::Rgba { r: 0, g: 0, b: 0, a: 0 };
+
+fn dxgi_format(format: SurfaceFormat) -> i32 {
+    match format {
+        SurfaceFormat::Rgba8Unorm => d3d::FORMAT_R8G8B8A8_UNORM,
+        SurfaceFormat::Bgra8Unorm => d3d::FORMAT_B8G8R8A8_UNORM,
+    }
+}
+
 pub use super::Mode;
 
 #[derive(Debug)]
@@ -68,6 +80,62 @@ struct PerDraw {
 }
 
 impl Renderer {
+    // The device and immediate context behind this renderer, for building a swapchain on the device
+    // daegun made. They are daegun's and die with it, so nothing built on them may outlive the
+    // renderer.
+    pub unsafe fn handles(&self) -> (*mut core::ffi::c_void, *mut core::ffi::c_void) {
+        (self.device.cast(), self.context.cast())
+    }
+
+    // Adopts a device the caller already made, which is what lets daegun draw into that device's
+    // swapchain: a backbuffer belongs to the device its swapchain was created on. `device` and
+    // `context` must be a live `ID3D11Device` and its immediate context. daegun takes a COM
+    // reference on each and releases only those, so the caller keeps its own.
+    pub unsafe fn from_device(
+        device: *mut core::ffi::c_void,
+        context: *mut core::ffi::c_void,
+    ) -> Result<Renderer, Error> {
+        if device.is_null() || context.is_null() {
+            return Err(Error::NoDevice);
+        }
+        let Some(d3d11) = d3d::Library::open(c"d3d11.dll") else {
+            return Err(Error::NoDevice);
+        };
+        let Some(compiler) = d3d::Library::open(c"d3dcompiler_47.dll") else {
+            return Err(Error::MissingEntryPoint("d3dcompiler_47.dll"));
+        };
+        let compile: d3d::PfnCompile = unsafe { compiler.symbol(c"D3DCompile") }
+            .ok_or(Error::MissingEntryPoint("D3DCompile"))?;
+
+        let device = unsafe { d3d::add_ref(device.cast::<d3d::Unknown>()) };
+        let context = unsafe { d3d::add_ref(context.cast::<d3d::Unknown>()) };
+        let (adapter, vendor) = unsafe { adapter_of(device) };
+        let mut r = Renderer {
+            _d3d11: d3d11,
+            _compiler: compiler,
+            compile,
+            device,
+            context,
+            feature_level: 0,
+            adapter,
+            software: vendor == Some(d3d::VENDOR_MICROSOFT),
+            vertex_shader: core::ptr::null_mut(),
+            grayscale: core::ptr::null_mut(),
+            subpixel: core::ptr::null_mut(),
+            blend_none: core::ptr::null_mut(),
+            blend_dual: core::ptr::null_mut(),
+            raster: core::ptr::null_mut(),
+            per_draw: core::cell::RefCell::new(PerDraw {
+                instances: Buffer::EMPTY,
+                capacity: 0,
+                subpixel: Buffer::EMPTY,
+                projection: core::ptr::null_mut(),
+            }),
+        };
+        r.build()?;
+        Ok(r)
+    }
+
     pub fn new() -> Result<Renderer, Error> {
         let Some(d3d11) = d3d::Library::open(c"d3d11.dll") else {
             return Err(Error::NoDevice);
@@ -274,10 +342,60 @@ impl Renderer {
         unsafe { &*(*self.context).vtable.cast::<d3d::ContextVtbl>() }
     }
 
+    // A target over a texture daegun did not create, such as a swapchain backbuffer. `texture` must
+    // be a live `ID3D11Texture2D` from this renderer's device, at least `width` by `height`,
+    // created with `D3D11_BIND_RENDER_TARGET` and the given format. daegun holds a COM reference
+    // and releases only that, so the texture stays the caller's.
+    pub unsafe fn target_from_texture(
+        &self,
+        texture: *mut core::ffi::c_void,
+        width: u32,
+        height: u32,
+        format: SurfaceFormat,
+    ) -> Result<Target, Error> {
+        if texture.is_null() || width == 0 || height == 0 {
+            return Err(Error::BadTarget);
+        }
+        let texture = texture.cast::<d3d::Unknown>();
+        let d = self.dev();
+        let mut view = core::ptr::null_mut();
+        unsafe {
+            check("CreateRenderTargetView", (d.create_render_target_view)(
+                self.device, texture, core::ptr::null(), &mut view,
+            ))?;
+        }
+        Ok(Target {
+            format,
+            clear: Some(TRANSPARENT),
+            borrowed: true,
+            texture: unsafe { d3d::add_ref(texture) },
+            staging: core::ptr::null_mut(),
+            view,
+            width,
+            height,
+            device: unsafe { d3d::add_ref(self.device) },
+            context: unsafe { d3d::add_ref(self.context) },
+            pixels: Vec::new(),
+            pending: false,
+        })
+    }
+
     pub fn target(&self, width: u32, height: u32) -> Result<Target, Error> {
+        self.target_with_format(width, height, SurfaceFormat::Rgba8Unorm)
+    }
+
+    // An offscreen target in the caller's byte order. A DXGI swapchain is BGRA, so a caller
+    // compositing daegun's output into one wants to match it rather than swizzle on the way out.
+    pub fn target_with_format(
+        &self,
+        width: u32,
+        height: u32,
+        format: SurfaceFormat,
+    ) -> Result<Target, Error> {
         if width == 0 || height == 0 {
             return Err(Error::BadTarget);
         }
+        let dxgi_format = dxgi_format(format);
         let d = self.dev();
 
         let render_desc = d3d::Texture2dDesc {
@@ -285,7 +403,7 @@ impl Renderer {
             height,
             mip_levels: 1,
             array_size: 1,
-            format: d3d::FORMAT_R8G8B8A8_UNORM,
+            format: dxgi_format,
             sample_desc: d3d::SampleDesc { count: 1, quality: 0 },
             usage: d3d::USAGE_DEFAULT,
             bind_flags: d3d::BIND_RENDER_TARGET,
@@ -322,6 +440,9 @@ impl Renderer {
         }
 
         let target = Target {
+            format,
+            clear: Some(TRANSPARENT),
+            borrowed: false,
             texture,
             staging,
             view,
@@ -342,6 +463,11 @@ impl Renderer {
     }
 
     pub fn read_pixels<'t>(&self, target: &'t mut Target) -> Result<&'t [u8], Error> {
+        // A borrowed texture has no staging copy of its own, and a caller drawing into its own
+        // backbuffer does not want one.
+        if target.borrowed {
+            return Err(Error::BadTarget);
+        }
         if target.device != self.device || target.width == 0 || target.height == 0 {
             return Err(Error::BadTarget);
         }
@@ -395,6 +521,11 @@ impl Drop for Renderer {
 }
 
 pub struct Target {
+    format: SurfaceFormat,
+    clear: Option<crate::daerizer::Rgba>,
+    // A borrowed texture is the caller's. daegun holds a reference like any COM user and releases
+    // only that, so the caller keeps its own.
+    borrowed: bool,
     texture: *mut d3d::Unknown,
     staging: *mut d3d::Unknown,
     view: *mut d3d::Unknown,
@@ -421,6 +552,19 @@ impl Drop for Target {
 }
 
 impl Target {
+    pub fn format(&self) -> SurfaceFormat {
+        self.format
+    }
+
+    pub fn clear(&self) -> Option<crate::daerizer::Rgba> {
+        self.clear
+    }
+
+    // `None` keeps what the target already holds instead of clearing.
+    pub fn set_clear(&mut self, clear: Option<crate::daerizer::Rgba>) {
+        self.clear = clear;
+    }
+
     pub fn width(&self) -> u32 {
         self.width
     }
@@ -767,7 +911,10 @@ impl Renderer {
 
         unsafe {
             (c.om_set_render_targets)(self.context, 1, &target.view, core::ptr::null_mut());
-            (c.clear_render_target_view)(self.context, target.view, [0.0f32; 4].as_ptr());
+            if let Some(c0) = target.clear {
+                let rgba = [c0.r, c0.g, c0.b, c0.a].map(|v| f32::from(v) / 255.0);
+                (c.clear_render_target_view)(self.context, target.view, rgba.as_ptr());
+            }
             (c.rs_set_viewports)(self.context, 1, &viewport);
             (c.rs_set_state)(self.context, self.raster);
             (c.ia_set_primitive_topology)(self.context, d3d::PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);

@@ -45,7 +45,7 @@ Rust:
 
 ```toml
 [dependencies]
-daegun = "1.0.0"
+daegun = "1.1.0"
 ```
 
 C: build the library in the shape you want. The ABI is behind the `capi` feature, which implies
@@ -138,7 +138,7 @@ Subsetting takes the text rather than glyph ids, so it shapes first and keeps wh
 ```rust
 let subset = font.subset_text("Type is the voice of the page.", &[])?;
 std::fs::write("subset.ttf", &subset.ttf)?;
-// 879,708 bytes to 19,988
+// 879,708 bytes to 15,800
 ```
 
 The result carries a real `cmap`, so it loads straight into `@font-face`. `Font::subset` takes glyph
@@ -164,9 +164,11 @@ let slot = font.gpu_glyph(&mut batch, gid, &[])?;
 ```
 
 Shader source for GLSL, HLSL and MSL ships with the crate. Backends for Metal, Vulkan, D3D11 and
-D3D12 are there too if you would rather daegun drove the device.
+D3D12 live under `daegun::gpu` if you would rather daegun drove the device. Each one can adopt a
+device you already made and draw straight into your swapchain surface, so a real-time app never pays
+for a readback.
 
-That is the shape of it. All 122 methods and 33 types are written up at
+That is the shape of it. All 223 methods and 49 types are written up at
 [dg.calia.cc](https://dg.calia.cc/reference/rust-methods/), each with what it returns, what it does
 when it cannot, and the units it answers in.
 
@@ -230,7 +232,7 @@ daegun_subset_free(subset);
 defaults, so you need not build the struct to get them. Layout, color, the GPU batch and the four
 backends all have their C forms; the header groups them and says what each borrows.
 
-The 420 functions, 86 types and 215 constants are all documented at
+The 440 functions, 86 types and 217 constants are all documented at
 [dg.calia.cc](https://dg.calia.cc/reference/c-functions/), including which pointers are borrowed and
 how long each stays valid.
 
@@ -259,7 +261,7 @@ error, the twelfth parses and is then driven over anyway, and none of them crash
 |---|---|
 | Dependencies | None at all, so the supply chain is the Rust compiler and nothing else. |
 | Unsafe code | Forbidden in every parser and in the shaper. The compiler enforces it: an inner `allow` is a hard error rather than a warning. Only the GPU backends and the C layer opt back in, and they say so at the top of their own files. |
-| C ABI | Every call in the Rust API is reachable from C, and the build fails if that stops being true. |
+| C ABI | Every call in the Rust API is reachable from C bar a handful that would be pointless there, and the header matches the library's own symbol table in both directions. The build fails if either stops being true. |
 | Hostile input | 500 mutated fonts on every build, each one reproducible from its seed. |
 | Sanitizers | The C round trip runs under AddressSanitizer and UndefinedBehaviorSanitizer. |
 | Panics | `unwrap` and `expect` are linted against outside tests, and the library is built with `panic = "abort"`, so it never unwinds into a caller. |

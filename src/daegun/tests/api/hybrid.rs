@@ -241,7 +241,7 @@ fn the_reference_engine_draws_without_a_device() {
 }
 
 #[test]
-fn the_reference_engine_resolves_colour_channels() {
+fn the_reference_engine_resolves_color_channels() {
     let f = font(GARAMOND);
     let gid = f.glyph_id('B' as u32).expect("B");
     let opts = RasterOptions::default().with_layout(SubpixelLayout::horizontal(StripeOrder::Rgb));
@@ -264,7 +264,7 @@ fn the_reference_engine_resolves_colour_channels() {
 }
 
 #[test]
-fn a_colour_glyph_goes_where_its_description_needs() {
+fn a_color_glyph_goes_where_its_description_needs() {
     let f = font(COLR);
     let device = gpu();
     let opts = RasterOptions::default();
@@ -277,7 +277,7 @@ fn a_colour_glyph_goes_where_its_description_needs() {
         let mut target = DrawTarget::new(&mut batch, &device);
         match f.draw_glyph(&mut target, gid, 48.0, &[], &opts, Some(0)) {
             DrawnGlyph::GpuColor(slots) => {
-                assert!(!slots.is_empty(), "a flat-colour glyph produced no slots");
+                assert!(!slots.is_empty(), "a flat-color glyph produced no slots");
                 seen_gpu_color += 1;
             }
             DrawnGlyph::Scene(scene) => {
@@ -292,7 +292,7 @@ fn a_colour_glyph_goes_where_its_description_needs() {
             _ => seen_other += 1,
         }
     }
-    assert!(seen_gpu_color > 0, "no glyph took the instanced colour path");
+    assert!(seen_gpu_color > 0, "no glyph took the instanced color path");
     assert!(seen_scene > 0, "no glyph took the scene path");
     let _ = seen_other;
 
@@ -301,11 +301,11 @@ fn a_colour_glyph_goes_where_its_description_needs() {
     let mut batch = GpuBatch::new();
     let mut target = DrawTarget::new(&mut batch, &device);
     let d = plain.draw_glyph(&mut target, gid, 48.0, &[], &opts, Some(0));
-    assert_eq!(which(&d), "gpu", "a monochrome glyph asked for in colour did not fall through");
+    assert_eq!(which(&d), "gpu", "a monochrome glyph asked for in color did not fall through");
 }
 
 #[test]
-fn a_colour_glyph_routed_off_the_gpu_stays_colour() {
+fn a_color_glyph_routed_off_the_gpu_stays_color() {
     let f = font(COLR);
     let opts = RasterOptions::default();
     let flat = (0..f.num_glyphs()).find(|&gid| {
@@ -317,12 +317,12 @@ fn a_colour_glyph_routed_off_the_gpu_stays_colour() {
             _ => false,
         }
     });
-    let Some(gid) = flat else { panic!("the fixture has no flat-colour glyph") };
+    let Some(gid) = flat else { panic!("the fixture has no flat-color glyph") };
 
     let mut batch = GpuBatch::new();
     let mut headless = DrawTarget::cpu_only(&mut batch);
     let d = f.draw_glyph(&mut headless, gid, 48.0, &[], &opts, Some(0));
-    assert_eq!(which(&d), "scene", "a colour glyph lost its colour when routed off the GPU");
+    assert_eq!(which(&d), "scene", "a color glyph lost its color when routed off the GPU");
     let DrawnGlyph::Scene(scene) = d else { unreachable!() };
     assert!(scene.rgba.iter().any(|&b| b != 0), "the scene rendered blank");
 }

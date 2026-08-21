@@ -420,7 +420,7 @@ fn a_radial_leaves_unpainted_what_no_interpolated_circle_reaches() {
 }
 
 #[test]
-fn resolve_stops_normalises_the_way_the_specification_asks() {
+fn resolve_stops_normalizes_the_way_the_specification_asks() {
     let c = |v: u8| Rgba::opaque(v, v, v);
 
     let messy = vec![
@@ -431,7 +431,7 @@ fn resolve_stops_normalises_the_way_the_specification_asks() {
     let Stops::Many(sorted) = resolve_stops(messy) else { panic!("three stops did not stay many") };
     let offsets: Vec<f32> = sorted.iter().map(|s| s.offset).collect();
     assert_eq!(offsets, vec![0.0, 0.5, 1.0], "offsets were not sorted and clamped into [0,1]");
-    assert_eq!(sorted[0].color, c(10), "the sort did not carry the colours with the offsets");
+    assert_eq!(sorted[0].color, c(10), "the sort did not carry the colors with the offsets");
 
     let cycle = [0.9f32, 0.5, 0.1];
     let hard: Vec<Stop> =
@@ -444,7 +444,7 @@ fn resolve_stops_normalises_the_way_the_specification_asks() {
         .collect();
     assert_eq!(
         order, expected,
-        "stops sharing an offset lost their document order, which reverses a hard colour break",
+        "stops sharing an offset lost their document order, which reverses a hard color break",
     );
 
     let nan = vec![
@@ -452,7 +452,7 @@ fn resolve_stops_normalises_the_way_the_specification_asks() {
         Stop { offset: 0.5, color: c(8) },
     ];
     let Stops::Many(fixed) = resolve_stops(nan) else { panic!("two stops did not stay many") };
-    assert!(fixed.iter().all(|s| s.offset.is_finite()), "a NaN offset survived normalisation");
+    assert!(fixed.iter().all(|s| s.offset.is_finite()), "a NaN offset survived normalization");
 
     assert!(matches!(resolve_stops(Vec::new()), Stops::Nothing));
     assert!(matches!(resolve_stops(vec![Stop { offset: 0.3, color: c(7) }]), Stops::Solid(s) if s == c(7)));
@@ -516,7 +516,7 @@ fn a_sweep_reproduces_both_examples_the_specification_works_through() {
 }
 
 #[test]
-fn an_ascending_sweep_can_still_reach_its_start_colour() {
+fn an_ascending_sweep_can_still_reach_its_start_color() {
     let g = Gradient {
         kind: GradientKind::Sweep { cx: 0.0, cy: 0.0, start_angle: 90.0, end_angle: 180.0 },
         stops: vec![
@@ -538,5 +538,61 @@ fn an_ascending_sweep_can_still_reach_its_start_colour() {
     assert!((126..=129).contains(&mid), "the midpoint of the arc read {mid}, not about half of 255");
     for deg in [181.0, 270.0, 359.0] {
         assert_eq!(ray(deg), 0, "at {deg}, after the sweep ends, Pad did not hold the last stop");
+    }
+}
+
+// COLR requires a degenerate linear or radial to paint nothing, and a sweep with coincident angles
+// to draw nothing under reflect and repeat.
+#[test]
+fn a_degenerate_gradient_paints_nothing_rather_than_its_last_stop() {
+    use daegun::paint::gradient::Ramp;
+    use daegun::paint::{Extend, Gradient, GradientKind, IDENTITY, Rgba, Stop};
+
+    let stops = || {
+        vec![
+            Stop { offset: 0.0, color: Rgba::opaque(255, 0, 0) },
+            Stop { offset: 1.0, color: Rgba::opaque(0, 0, 255) },
+        ]
+    };
+    let ramp = |kind, extend| {
+        Ramp::new(&Gradient { kind, stops: stops(), extend, transform: IDENTITY }, &IDENTITY)
+    };
+    let probes = [(5.0, 5.0), (20.0, 20.0), (35.0, 35.0), (-12.0, 7.0)];
+
+    let degenerate: [(&str, GradientKind); 3] = [
+        ("linear with p0 == p1", GradientKind::Linear { x0: 10.0, y0: 10.0, x1: 10.0, y1: 10.0 }),
+        (
+            "radial with identical circles",
+            GradientKind::Radial { x0: 20.0, y0: 20.0, r0: 8.0, x1: 20.0, y1: 20.0, r1: 8.0 },
+        ),
+        (
+            "sweep with coincident angles",
+            GradientKind::Sweep { cx: 20.0, cy: 20.0, start_angle: 45.0, end_angle: 45.0 },
+        ),
+    ];
+
+    for (what, kind) in degenerate {
+        for extend in [Extend::Pad, Extend::Reflect, Extend::Repeat] {
+            let r = ramp(kind, extend);
+            assert!(matches!(r, Ramp::Flat(None)), "{what} under {extend:?} was not flat-nothing");
+            for (x, y) in probes {
+                assert_eq!(r.at(x, y), None, "{what} under {extend:?} painted at ({x}, {y})");
+            }
+        }
+    }
+
+    // The control: move one endpoint and the same gradients paint again, so the guard is catching
+    // degeneracy rather than switching gradients off.
+    let ordinary: [(&str, GradientKind); 3] = [
+        ("linear", GradientKind::Linear { x0: 0.0, y0: 0.0, x1: 40.0, y1: 0.0 }),
+        ("radial", GradientKind::Radial { x0: 20.0, y0: 20.0, r0: 0.0, x1: 20.0, y1: 20.0, r1: 30.0 }),
+        ("sweep", GradientKind::Sweep { cx: 20.0, cy: 20.0, start_angle: 45.0, end_angle: 315.0 }),
+    ];
+    for (what, kind) in ordinary {
+        let r = ramp(kind, Extend::Pad);
+        assert!(
+            probes.iter().any(|&(x, y)| r.at(x, y).is_some()),
+            "an ordinary {what} gradient painted nothing anywhere",
+        );
     }
 }

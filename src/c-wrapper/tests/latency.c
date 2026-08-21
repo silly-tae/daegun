@@ -62,7 +62,7 @@ int main(int argc, char **argv)
     daegun_font_glyph_id(font, (uint32_t)'g', &gid);
 
     static double s[ROUNDS];
-    printf("\ndaegun — C ABI, %d rounds after %d warmup\n\n", ROUNDS, WARMUP);
+    printf("\ndaegun – C ABI, %d rounds after %d warmup\n\n", ROUNDS, WARMUP);
 
     for (int r = 0; r < WARMUP; r++) {
         daegun_font *f = NULL;

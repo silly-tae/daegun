@@ -11,6 +11,16 @@ pub enum Refusal {
     Failed,
 }
 
+// A surface daegun did not create can be in either byte order, and the choice is not daegun's:
+// CAMetalLayer refuses RGBA8 outright, so a swapchain image is BGRA8 in practice.
+#[non_exhaustive]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum SurfaceFormat {
+    #[default]
+    Rgba8Unorm,
+    Bgra8Unorm,
+}
+
 pub trait Surface {
     fn width(&self) -> u32;
     fn height(&self) -> u32;

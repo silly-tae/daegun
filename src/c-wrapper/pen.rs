@@ -9,7 +9,7 @@ use crate::OutlinePen;
 // lock only long enough to clone an `Arc` out of the cache. Adding a guard here breaks that.
 //
 // A null callback means ignore that event, so a caller wanting only the on-curve points supplies
-// three of the five. A callback that unwinds through these frames is undefined behaviour and
+// three of the five. A callback that unwinds through these frames is undefined behavior and
 // nothing here can prevent it.
 pub struct Pen {
     pub move_to: Option<extern "C" fn(*mut c_void, f32, f32)>,

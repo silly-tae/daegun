@@ -472,9 +472,31 @@ pub unsafe extern "C" fn daegun_font_render_colr_glyph(
     palette_index: u16,
     out: *mut *mut Scene,
 ) -> Status {
+    unsafe {
+        daegun_font_render_colr_glyph_with(
+            font, gid, px, axes, axes_len, palette_index, core::ptr::null(), out,
+        )
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn daegun_font_render_colr_glyph_with(
+    font: *const Font,
+    gid: u16,
+    px: f32,
+    axes: *const Axis,
+    axes_len: usize,
+    palette_index: u16,
+    foreground: *const u8,
+    out: *mut *mut Scene,
+) -> Status {
     let Some(font) = (unsafe { borrow(font) }) else { return Status::Null };
     let location = unsafe { axes_of(axes, axes_len) };
-    let Some(s) = font.render_colr_glyph(gid, px, &location, palette_index) else {
+    let rendered = match unsafe { crate::ffi::rgba_of(foreground) } {
+        Some(fg) => font.render_colr_glyph_with(gid, px, &location, palette_index, fg),
+        None => font.render_colr_glyph(gid, px, &location, palette_index),
+    };
+    let Some(s) = rendered else {
         return Status::Absent;
     };
     unsafe {

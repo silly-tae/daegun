@@ -5,7 +5,7 @@
 // which is what everything outside these scripts is.
 //
 // Derived in part from the Unicode Character Database. Copyright (c) Unicode,
-// Inc.; the licence notice is reproduced in full at the top of
+// Inc.; the license notice is reproduced in full at the top of
 // src/daecore/src/daeshaper/generated/unicode_tables.rs.
 
 // A codepoint's Indic category and position, behind a three-stage trie.

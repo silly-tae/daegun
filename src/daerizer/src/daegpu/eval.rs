@@ -213,8 +213,8 @@ fn tap_offset(tap: u32, origin: i32, oversample: u32, em_pixels: f32) -> f32 {
     if oversample == 0 || em_pixels == 0.0 {
         return 0.0;
     }
-    let centre = (origin as f32 + tap as f32 + 0.5) / oversample as f32;
-    (centre - 0.5) / em_pixels
+    let center = (origin as f32 + tap as f32 + 0.5) / oversample as f32;
+    (center - 0.5) / em_pixels
 }
 
 pub fn coverage_channels(

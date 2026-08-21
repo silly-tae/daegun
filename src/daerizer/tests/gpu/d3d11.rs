@@ -280,3 +280,178 @@ fn the_native_handle_is_stable_and_distinct() {
     r.read_pixels(&mut a).expect("read");
     assert_eq!(h, unsafe { a.texture() }, "a read replaced the texture");
 }
+
+fn one_glyph(batch: &mut GpuBatch) -> daegun::GlyphInstance {
+    let face = super::face::Face::load("eb-garamond/EBGaramond.ttf");
+    let slot = face.glyph(batch, 37).expect("a glyph with an outline");
+    // Three different channels, or a byte swap would be invisible.
+    slot.instance([8.0, 8.0], 64.0, [64.0, 64.0], [1.0, 0.15, 0.0, 1.0])
+}
+
+// A DXGI swapchain is BGRA, so the two byte orders have to put the same colors in the same places.
+#[test]
+fn the_two_byte_orders_agree_once_swapped() {
+    let Some(r) = renderer() else { return };
+    let mut batch = GpuBatch::new();
+    let inst = one_glyph(&mut batch);
+    let geometry = r.geometry(&batch).expect("geometry");
+    let params = SubpixelParams::default();
+    let (w, h) = (96u32, 96u32);
+
+    let shot = |format| {
+        let mut t = r.target_with_format(w, h, format).expect("target");
+        r.draw(&mut t, &geometry, &[inst], &params, d3d11::Mode::Grayscale).expect("draw");
+        r.read_pixels(&mut t).expect("read").to_vec()
+    };
+    let rgba = shot(d3d11::Format::Rgba8Unorm);
+    let bgra = shot(d3d11::Format::Bgra8Unorm);
+
+    assert_eq!(rgba.len(), bgra.len(), "the two targets are different sizes");
+    let mut inked = 0usize;
+    for (i, (a, b)) in rgba.chunks_exact(4).zip(bgra.chunks_exact(4)).enumerate() {
+        assert_eq!(
+            [b[0], b[1], b[2], b[3]],
+            [a[2], a[1], a[0], a[3]],
+            "pixel {i} did not come back byte-swapped",
+        );
+        if a[3] > 0 {
+            inked += 1;
+        }
+    }
+    assert!(inked > 300, "only {inked} pixels took ink, so the comparison proved little");
+}
+
+#[test]
+fn a_target_clears_to_the_color_it_was_given() {
+    let Some(r) = renderer() else { return };
+    let mut batch = GpuBatch::new();
+    let _ = one_glyph(&mut batch);
+    let geometry = r.geometry(&batch).expect("geometry");
+    let mut t = r.target(64, 64).expect("target");
+
+    let transparent = daegun::paint::Rgba { r: 0, g: 0, b: 0, a: 0 };
+    assert_eq!(t.clear(), Some(transparent), "the default clear is no longer transparent black");
+
+    let slate = daegun::paint::Rgba { r: 20, g: 40, b: 60, a: 255 };
+    t.set_clear(Some(slate));
+    r.draw(&mut t, &geometry, &[], &SubpixelParams::default(), d3d11::Mode::Grayscale)
+        .expect("draw");
+    let px = r.read_pixels(&mut t).expect("read");
+    assert!(
+        px.chunks_exact(4).all(|p| p == [20, 40, 60, 255]),
+        "the target did not clear to the color it was given",
+    );
+}
+
+// Every draw cleared, so a second geometry erased the first. Not clearing is what lets them layer.
+#[test]
+fn a_second_geometry_can_draw_over_the_first() {
+    let Some(r) = renderer() else { return };
+    let face = super::face::Face::load("eb-garamond/EBGaramond.ttf");
+    let (w, h) = (128u32, 64u32);
+    let params = SubpixelParams::default();
+
+    let mut left_batch = GpuBatch::new();
+    let left = face
+        .glyph(&mut left_batch, 37)
+        .expect("glyph")
+        .instance([6.0, 6.0], 48.0, [48.0, 48.0], [1.0; 4]);
+    let left_geo = r.geometry(&left_batch).expect("geometry");
+
+    let mut right_batch = GpuBatch::new();
+    let right = face
+        .glyph(&mut right_batch, 50)
+        .expect("glyph")
+        .instance([72.0, 6.0], 48.0, [48.0, 48.0], [1.0; 4]);
+    let right_geo = r.geometry(&right_batch).expect("geometry");
+
+    let halves = |px: &[u8]| {
+        let (mut l, mut rt) = (0usize, 0usize);
+        for y in 0..h as usize {
+            for x in 0..w as usize {
+                if px[(y * w as usize + x) * 4 + 3] > 0 {
+                    if x < 64 { l += 1 } else { rt += 1 }
+                }
+            }
+        }
+        (l, rt)
+    };
+
+    let mut layered = r.target(w, h).expect("target");
+    r.draw(&mut layered, &left_geo, &[left], &params, d3d11::Mode::Grayscale).expect("first");
+    layered.set_clear(None);
+    r.draw(&mut layered, &right_geo, &[right], &params, d3d11::Mode::Grayscale).expect("second");
+    let (l, rt) = halves(r.read_pixels(&mut layered).expect("read"));
+    assert!(l > 0 && rt > 0, "layering lost a draw: left {l}, right {rt}");
+
+    let mut cleared = r.target(w, h).expect("target");
+    r.draw(&mut cleared, &left_geo, &[left], &params, d3d11::Mode::Grayscale).expect("first");
+    r.draw(&mut cleared, &right_geo, &[right], &params, d3d11::Mode::Grayscale).expect("second");
+    let (l, rt) = halves(r.read_pixels(&mut cleared).expect("read"));
+    assert_eq!(l, 0, "a clearing draw no longer wipes what came before it");
+    assert!(rt > 0, "the second draw did not land");
+}
+
+// A swapchain backbuffer belongs to the device its swapchain was made on, so drawing into one needs
+// the caller's device rather than the one daegun would have created.
+#[test]
+fn a_renderer_can_adopt_a_device_it_did_not_create() {
+    let Some(owner) = renderer() else { return };
+    let mut batch = GpuBatch::new();
+    let inst = one_glyph(&mut batch);
+    let params = SubpixelParams::default();
+
+    let shot = |r: &d3d11::Renderer| {
+        let geometry = r.geometry(&batch).expect("geometry");
+        let mut t = r.target(96, 96).expect("target");
+        r.draw(&mut t, &geometry, &[inst], &params, d3d11::Mode::Grayscale).expect("draw");
+        r.read_pixels(&mut t).expect("read").to_vec()
+    };
+    let from_owner = shot(&owner);
+
+    let (device, context) = unsafe { owner.handles() };
+    let adopted = unsafe { d3d11::Renderer::from_device(device, context) }.expect("adopts");
+    assert_eq!(adopted.device_name(), owner.device_name(), "adopted a different device");
+    assert_eq!(shot(&adopted), from_owner, "the adopted device drew something else");
+    assert!(from_owner.chunks_exact(4).any(|p| p[3] > 0), "neither renderer drew anything");
+}
+
+#[test]
+fn adopting_a_null_device_is_refused_rather_than_crashing() {
+    assert!(
+        unsafe { d3d11::Renderer::from_device(core::ptr::null_mut(), core::ptr::null_mut()) }
+            .is_err(),
+        "a null device was accepted",
+    );
+}
+
+// A borrowed target has no staging of its own, so it is pointed at the texture of an owned one: the
+// draw goes through the borrowed path and the pixels come back through the owner.
+#[test]
+fn a_borrowed_texture_draws_what_an_owned_one_does() {
+    let Some(r) = renderer() else { return };
+    let mut batch = GpuBatch::new();
+    let inst = one_glyph(&mut batch);
+    let geometry = r.geometry(&batch).expect("geometry");
+    let params = SubpixelParams::default();
+    let (w, h) = (96u32, 96u32);
+
+    for format in [d3d11::Format::Rgba8Unorm, d3d11::Format::Bgra8Unorm] {
+        let mut owned = r.target_with_format(w, h, format).expect("owned target");
+        r.draw(&mut owned, &geometry, &[inst], &params, d3d11::Mode::Grayscale).expect("draw");
+        let direct = r.read_pixels(&mut owned).expect("read").to_vec();
+
+        let mut borrowed = unsafe { r.target_from_texture(owned.texture(), w, h, format) }
+            .expect("a target over the owned texture");
+        assert!(
+            r.read_pixels(&mut borrowed).is_err(),
+            "a borrowed target claimed to have pixels to read back",
+        );
+        r.draw(&mut borrowed, &geometry, &[inst], &params, d3d11::Mode::Grayscale).expect("draw");
+        drop(borrowed);
+
+        let through_borrow = r.read_pixels(&mut owned).expect("read").to_vec();
+        assert_eq!(direct, through_borrow, "{format:?}: the borrowed path drew something else");
+        assert!(direct.chunks_exact(4).any(|p| p[3] > 0), "{format:?}: nothing was drawn at all");
+    }
+}

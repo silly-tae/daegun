@@ -149,7 +149,7 @@ fn emit_open(pts: &[Pt], r: f32, style: &StrokeStyle, tolerance: f32, pen: &mut 
     emit_loop(&out, pen);
 }
 
-#[allow(clippy::too_many_arguments, reason = "a corner is its two neighbours as well as itself")]
+#[allow(clippy::too_many_arguments, reason = "a corner is its two neighbors as well as itself")]
 fn push_join(
     out: &mut Vec<Pt>,
     prev: Pt,
@@ -235,9 +235,9 @@ fn dot(at: Pt, r: f32, style: &StrokeStyle, tolerance: f32, pen: &mut dyn Outlin
     emit_loop(&out, pen);
 }
 
-fn arc(out: &mut Vec<Pt>, centre: Pt, a: Pt, b: Pt, r: f32, tolerance: f32) {
-    let a0 = atan2((a.1 - centre.1) as f64, (a.0 - centre.0) as f64) as f32;
-    let a1 = atan2((b.1 - centre.1) as f64, (b.0 - centre.0) as f64) as f32;
+fn arc(out: &mut Vec<Pt>, center: Pt, a: Pt, b: Pt, r: f32, tolerance: f32) {
+    let a0 = atan2((a.1 - center.1) as f64, (a.0 - center.0) as f64) as f32;
+    let a1 = atan2((b.1 - center.1) as f64, (b.0 - center.0) as f64) as f32;
     let mut sweep = a1 - a0;
     while sweep > PI {
         sweep -= 2.0 * PI;
@@ -251,7 +251,7 @@ fn arc(out: &mut Vec<Pt>, centre: Pt, a: Pt, b: Pt, r: f32, tolerance: f32) {
     for k in 1..steps {
         let t = a0 + sweep * (k as f32 / steps as f32);
         let (sin, cos) = sin_cos(t as f64);
-        out.push((centre.0 + r * cos as f32, centre.1 + r * sin as f32));
+        out.push((center.0 + r * cos as f32, center.1 + r * sin as f32));
     }
     out.push(b);
 }

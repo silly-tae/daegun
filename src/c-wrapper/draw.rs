@@ -150,12 +150,38 @@ pub unsafe extern "C" fn daegun_font_gpu_color_glyph(
     palette_index: u16,
     out: *mut *mut ColorSlots,
 ) -> Status {
+    unsafe {
+        daegun_font_gpu_color_glyph_with(
+            font, batch, gid, axes, axes_len, palette_index, core::ptr::null(), out,
+        )
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn daegun_font_gpu_color_glyph_with(
+    font: *const Font,
+    batch: *mut Batch,
+    gid: u16,
+    axes: *const Axis,
+    axes_len: usize,
+    palette_index: u16,
+    foreground: *const u8,
+    out: *mut *mut ColorSlots,
+) -> Status {
     let Some(font) = (unsafe { borrow(font) }) else { return Status::Null };
     if batch.is_null() {
         return Status::Null;
     }
     let location = unsafe { axes_of(axes, axes_len) };
-    match unsafe { font.gpu_color_glyph(&mut (*batch).0, gid, &location, palette_index) } {
+    let built = unsafe {
+        match crate::ffi::rgba_of(foreground) {
+            Some(fg) => {
+                font.gpu_color_glyph_with(&mut (*batch).0, gid, &location, palette_index, fg)
+            }
+            None => font.gpu_color_glyph(&mut (*batch).0, gid, &location, palette_index),
+        }
+    };
+    match built {
         Ok(slots) => unsafe { deliver(out, ColorSlots(slots)) },
         Err(e) => {
             crate::ffi::set_error(&alloc::format!("{e:?}"));
@@ -262,6 +288,30 @@ pub unsafe extern "C" fn daegun_font_draw_glyph(
     palette: i32,
     out: *mut *mut Drawn,
 ) -> Status {
+    unsafe {
+        daegun_font_draw_glyph_with(
+            font, batch, device, policy, gid, px, axes, axes_len, opts, palette,
+            core::ptr::null(), out,
+        )
+    }
+}
+
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments, reason = "the router needs every input the two paths take")]
+pub unsafe extern "C" fn daegun_font_draw_glyph_with(
+    font: *const Font,
+    batch: *mut Batch,
+    device: *const crate::DeviceProfile,
+    policy: *const PolicyC,
+    gid: u16,
+    px: f32,
+    axes: *const Axis,
+    axes_len: usize,
+    opts: *const RasterOptionsC,
+    palette: i32,
+    foreground: *const u8,
+    out: *mut *mut Drawn,
+) -> Status {
     let Some(font) = (unsafe { borrow(font) }) else { return Status::Null };
     if batch.is_null() {
         return Status::Null;
@@ -283,7 +333,12 @@ pub unsafe extern "C" fn daegun_font_draw_glyph(
             None => DrawTarget::cpu_only(batch),
         }
         .with_policy(built_policy);
-        font.draw_glyph(&mut target, gid, px, &location, &options, pal)
+        match crate::ffi::rgba_of(foreground) {
+            Some(fg) => {
+                font.draw_glyph_with(&mut target, gid, px, &location, &options, pal, fg)
+            }
+            None => font.draw_glyph(&mut target, gid, px, &location, &options, pal),
+        }
     };
 
     let built = match drawn {

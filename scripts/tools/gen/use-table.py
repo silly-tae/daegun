@@ -345,7 +345,7 @@ def emit(ours, names):
         f.write("// consumes.\n")
         f.write("//\n")
         f.write("// Derived in part from the Unicode Character Database. Copyright (c) Unicode,\n")
-        f.write("// Inc.; the licence notice is reproduced in full at the top of\n")
+        f.write("// Inc.; the license notice is reproduced in full at the top of\n")
         f.write("// src/daecore/src/daeshaper/generated/unicode_tables.rs.\n")
         f.write("\n")
         stats = trie.emit(

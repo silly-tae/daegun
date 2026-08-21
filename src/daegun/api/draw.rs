@@ -71,13 +71,28 @@ impl Font {
         opts: &RasterOptions,
         palette: Option<u16>,
     ) -> DrawnGlyph {
+        self.draw_glyph_with(target, gid, px, axes, opts, palette, super::color::FOREGROUND)
+    }
+
+    #[allow(clippy::too_many_arguments, reason = "the router needs every input the two paths take")]
+    pub fn draw_glyph_with(
+        &self,
+        target: &mut DrawTarget<'_>,
+        gid: u16,
+        px: f32,
+        axes: &[(&str, f64)],
+        opts: &RasterOptions,
+        palette: Option<u16>,
+        foreground: crate::daerizer::Rgba,
+    ) -> DrawnGlyph {
         let request = request_for(px, opts);
 
         if let Some(palette_index) = palette {
-            let attempt = self.gpu_color_glyph(target.batch, gid, axes, palette_index);
-            // A glyph with no colour description answers `NoOutline` here, meaning "not a colour
+            let attempt =
+                self.gpu_color_glyph_with(target.batch, gid, axes, palette_index, foreground);
+            // A glyph with no color description answers `NoOutline` here, meaning "not a color
             // glyph" rather than "not a glyph" – so it falls through instead of returning, which is
-            // what lets a caller ask for colour on every glyph in a run.
+            // what lets a caller ask for color on every glyph in a run.
             if !matches!(attempt, Err(GpuGlyphError::NoOutline)) {
                 let decision =
                     route(attempt.as_ref().map(|_| ()).map_err(|e| *e), &request, target.device, &target.policy);
@@ -87,7 +102,7 @@ impl Font {
                         Err(_) => DrawnGlyph::Refused(Refusal::NonFinite),
                     },
                     Rendered::Scene | Rendered::Cpu | Rendered::Reference => {
-                        match self.render_colr_glyph(gid, px, axes, palette_index) {
+                        match self.render_colr_glyph_with(gid, px, axes, palette_index, foreground) {
                             Some(scene) => DrawnGlyph::Scene(scene),
                             None => DrawnGlyph::Nothing,
                         }
@@ -118,10 +133,12 @@ impl Font {
                 },
                 Err(_) => DrawnGlyph::Refused(Refusal::NonFinite),
             },
-            Rendered::Scene => match self.render_colr_glyph(gid, px, axes, palette.unwrap_or(0)) {
-                Some(scene) => DrawnGlyph::Scene(scene),
-                None => DrawnGlyph::Nothing,
-            },
+            Rendered::Scene => {
+                match self.render_colr_glyph_with(gid, px, axes, palette.unwrap_or(0), foreground) {
+                    Some(scene) => DrawnGlyph::Scene(scene),
+                    None => DrawnGlyph::Nothing,
+                }
+            }
             Rendered::Nothing => DrawnGlyph::Nothing,
             Rendered::FlushAndRetry => DrawnGlyph::BatchFull,
             Rendered::Refused(why) => DrawnGlyph::Refused(why),

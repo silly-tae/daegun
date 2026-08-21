@@ -204,11 +204,11 @@ fn compute_segments(pts: &AutoPoints, tolerance: f32, s: &mut Scratch) {
                     x_max = x_max.max(pts.x[i]);
                 }
                 let dx = pts.x[at(first + len - 1)] - pts.x[at(first)];
-                let neighbours = (pts.y[at(first + n - 1)] + pts.y[at(first + len)]) * 0.5;
+                let neighbors = (pts.y[at(first + n - 1)] + pts.y[at(first + len)]) * 0.5;
                 s.segments.push(Segment {
                     pos,
                     points: (off, len as u32),
-                    dir: side(dx, convention, if neighbours < pos { 1 } else { -1 }),
+                    dir: side(dx, convention, if neighbors < pos { 1 } else { -1 }),
                     x_min,
                     x_max,
                     link: None,

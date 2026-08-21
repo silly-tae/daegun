@@ -71,3 +71,23 @@ pub use api::bytes;
 pub use api::format;
 pub use api::build_font;
 pub use crate::daerizer::DisplayList as ColorScene;
+
+// `Rgba` is in the signature of every `_with` colour entry point, so it has to be documented beside
+// them rather than reachable only through a hidden module.
+pub use crate::daerizer::Rgba;
+
+// The device backends, for a caller who would rather daegun drove the GPU than handed back buffers
+// to upload. Curated rather than exposing `daerizer` whole: these four modules are what a caller
+// drives, and the rasterizer around them is engine plumbing.
+pub mod gpu {
+    pub use crate::daerizer::daegpu::Mode;
+    pub use crate::daerizer::daegpu::backend::SurfaceFormat;
+
+    #[cfg(target_vendor = "apple")]
+    pub use crate::daerizer::daegpu::ffi as metal;
+    pub use crate::daerizer::daegpu::vk as vulkan;
+    #[cfg(windows)]
+    pub use crate::daerizer::daegpu::d3d11;
+    #[cfg(windows)]
+    pub use crate::daerizer::daegpu::d3d12;
+}

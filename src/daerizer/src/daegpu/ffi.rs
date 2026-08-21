@@ -1,11 +1,17 @@
 use alloc::string::String;
 use super::{Band, CurvePoint, GlyphInstance, GpuBatch, HullVertex, ShaderLanguage, ShaderStage, SubpixelParams, binding};
+use super::backend::SurfaceFormat;
 use super::metal;
 use super::objc::{Id, Owned, Pool, sel, send0, send1, send4};
 
 pub const PROJECTION_INDEX: u32 = 6;
 
+// What a target clears to unless the caller says otherwise. Transparent, because an offscreen target
+// is composited by whoever asked for it.
+const TRANSPARENT: crate::daerizer::Rgba = crate::daerizer::Rgba { r: 0, g: 0, b: 0, a: 0 };
+
 pub use super::Mode;
+pub use super::backend::SurfaceFormat as Format;
 
 #[derive(Debug)]
 pub enum Error {
@@ -44,7 +50,14 @@ impl core::error::Error for Error {}
 
 pub struct Target {
     texture: Owned,
-    readback: Owned,
+    // Absent on a surface daegun did not create: there is nowhere to read back to, and a caller
+    // rendering into its own swapchain does not want the copy anyway.
+    readback: Option<Owned>,
+    // Present only when the surface came from a drawable, which daegun then presents on the same
+    // command buffer as the draw.
+    drawable: Option<Owned>,
+    format: SurfaceFormat,
+    clear: Option<crate::daerizer::Rgba>,
     width: u32,
     height: u32,
     device: u64,
@@ -67,13 +80,28 @@ impl Target {
     // A view of the readback buffer, not a copy, and all zero before the first `read_pixels` –
     // the buffer is cleared when the target is made, so this is defined rather than usually-zero.
     pub fn pixels(&self) -> &[u8] {
+        let Some(readback) = self.readback.as_ref() else { return &[] };
         unsafe {
-            let p = metal::buffer_contents(self.readback.id());
+            let p = metal::buffer_contents(readback.id());
             if p.is_null() {
                 return &[];
             }
             core::slice::from_raw_parts(p.cast::<u8>(), self.len())
         }
+    }
+
+    pub fn format(&self) -> SurfaceFormat {
+        self.format
+    }
+
+    pub fn clear(&self) -> Option<crate::daerizer::Rgba> {
+        self.clear
+    }
+
+    // `None` keeps what the target already holds instead of clearing, so a second geometry can be
+    // drawn over the first rather than erasing it.
+    pub fn set_clear(&mut self, clear: Option<crate::daerizer::Rgba>) {
+        self.clear = clear;
     }
 
     pub fn pixel(&self, x: u32, y: u32) -> Option<[u8; 4]> {
@@ -120,14 +148,21 @@ impl Geometry {
     }
 }
 
+struct Pipelines {
+    grayscale: Owned,
+    subpixel: Owned,
+}
+
 pub struct Renderer {
     device: Owned,
     // A Mac with two GPUs can hand a texture from one to a renderer on the other, and Metal's
-    // answer to that is undefined behaviour rather than an error. This is what lets a draw refuse.
+    // answer to that is undefined behavior rather than an error. This is what lets a draw refuse.
     device_id: u64,
     queue: Owned,
-    grayscale: Owned,
-    subpixel: Owned,
+    // A pipeline is bound to its attachment's pixel format, and a surface daegun did not create
+    // chooses its own, so both orders are built up front and drawing stays infallible.
+    rgba: Pipelines,
+    bgra: Pipelines,
     slots: core::cell::RefCell<[Slot; FRAMES_IN_FLIGHT]>,
     frame: core::cell::Cell<usize>,
 }
@@ -135,8 +170,23 @@ pub struct Renderer {
 impl Renderer {
     pub fn new() -> Result<Renderer, Error> {
         let _pool = Pool::new();
+        Renderer::build(metal::system_default_device().ok_or(Error::NoDevice)?)
+    }
 
-        let device = metal::system_default_device().ok_or(Error::NoDevice)?;
+    // `device` must be a live `MTLDevice`. It is retained for the renderer's lifetime and never
+    // released beyond that, so the caller keeps its own reference.
+    pub unsafe fn from_device(device: *mut core::ffi::c_void) -> Result<Renderer, Error> {
+        if device.is_null() {
+            return Err(Error::NoDevice);
+        }
+        let _pool = Pool::new();
+        let device = unsafe { super::objc::retain(device) }.ok_or(Error::NoDevice)?;
+        Renderer::build(device)
+    }
+
+    fn build(device: Owned) -> Result<Renderer, Error> {
+        let _pool = Pool::new();
+
         let queue =
             unsafe { metal::new_command_queue(device.id()) }.ok_or(Error::Allocation("a command queue"))?;
 
@@ -158,13 +208,19 @@ impl Renderer {
         let gray_fn = entry(&gray_lib, "daegunGlyphFragment")?;
         let subpixel_fn = entry(&subpixel_lib, "daegunGlyphSubpixelFragment")?;
 
-        let build = |fragment: &Owned, dual: bool, stage: &'static str| -> Result<Owned, Error> {
-            unsafe { metal::new_pipeline(device.id(), vertex_fn.id(), fragment.id(), dual) }
+        let build = |fragment: &Owned, dual: bool, stage: &'static str, format: u64| {
+            unsafe { metal::new_pipeline(device.id(), vertex_fn.id(), fragment.id(), dual, format) }
                 .map_err(|message| Error::PipelineCreate { stage, message })
         };
+        let pair = |format: u64| -> Result<Pipelines, Error> {
+            Ok(Pipelines {
+                grayscale: build(&gray_fn, false, "grayscale", format)?,
+                subpixel: build(&subpixel_fn, true, "subpixel", format)?,
+            })
+        };
 
-        let grayscale = build(&gray_fn, false, "grayscale")?;
-        let subpixel = build(&subpixel_fn, true, "subpixel")?;
+        let rgba = pair(metal::PIXEL_FORMAT_RGBA8_UNORM)?;
+        let bgra = pair(metal::PIXEL_FORMAT_BGRA8_UNORM)?;
 
         let device_id = unsafe { metal::registry_id(device.id()) };
 
@@ -172,8 +228,8 @@ impl Renderer {
             device,
             device_id,
             queue,
-            grayscale,
-            subpixel,
+            rgba,
+            bgra,
             slots: core::cell::RefCell::new(Default::default()),
             frame: core::cell::Cell::new(0),
         })
@@ -212,6 +268,17 @@ impl Renderer {
     }
 
     pub fn target(&self, width: u32, height: u32) -> Result<Target, Error> {
+        self.target_with_format(width, height, SurfaceFormat::Rgba8Unorm)
+    }
+
+    // An offscreen target in the caller's byte order, for compositing into a surface that is not
+    // daegun's without a swizzle on the way out.
+    pub fn target_with_format(
+        &self,
+        width: u32,
+        height: u32,
+        format: SurfaceFormat,
+    ) -> Result<Target, Error> {
         if width == 0 || height == 0 {
             return Err(Error::BadTarget);
         }
@@ -220,8 +287,13 @@ impl Renderer {
             .and_then(|p| p.checked_mul(4))
             .ok_or(Error::BadTarget)?;
         let _pool = Pool::new();
-        let texture = unsafe { metal::new_render_target(self.device.id(), width, height) }
-            .ok_or(Error::Allocation("a render target"))?;
+        let pixel_format = match format {
+            SurfaceFormat::Rgba8Unorm => metal::PIXEL_FORMAT_RGBA8_UNORM,
+            SurfaceFormat::Bgra8Unorm => metal::PIXEL_FORMAT_BGRA8_UNORM,
+        };
+        let texture =
+            unsafe { metal::new_render_target(self.device.id(), width, height, pixel_format) }
+                .ok_or(Error::Allocation("a render target"))?;
         let readback = unsafe { metal::new_buffer_uninit(self.device.id(), len) }
             .ok_or(Error::Allocation("the readback buffer"))?;
         unsafe {
@@ -230,13 +302,91 @@ impl Renderer {
                 core::ptr::write_bytes(p.cast::<u8>(), 0, len);
             }
         }
-        Ok(Target { texture, readback, width, height, device: self.device_id, pending: None })
+        Ok(Target {
+            texture,
+            readback: Some(readback),
+            drawable: None,
+            format,
+            clear: Some(TRANSPARENT),
+            width,
+            height,
+            device: self.device_id,
+            pending: None,
+        })
+    }
+
+    // `texture` must be a live `MTLTexture` from this renderer's device, at least `width` by
+    // `height`. It is retained for the target's lifetime, so the caller keeps its own reference.
+    pub unsafe fn target_from_texture(
+        &self,
+        texture: *mut core::ffi::c_void,
+        width: u32,
+        height: u32,
+    ) -> Result<Target, Error> {
+        unsafe { self.borrowed(texture, core::ptr::null_mut(), width, height) }
+    }
+
+    // `drawable` must be a live `CAMetalDrawable` whose texture belongs to this renderer's device.
+    // daegun presents it on the command buffer carrying the draw, so the caller must not present it
+    // as well.
+    pub unsafe fn target_from_drawable(
+        &self,
+        drawable: *mut core::ffi::c_void,
+        width: u32,
+        height: u32,
+    ) -> Result<Target, Error> {
+        if drawable.is_null() {
+            return Err(Error::BadTarget);
+        }
+        let _pool = Pool::new();
+        let texture = unsafe { metal::drawable_texture(drawable) };
+        unsafe { self.borrowed(texture, drawable, width, height) }
+    }
+
+    // The format comes off the texture rather than from the caller, because a surface that says one
+    // thing and is another fails inside Metal rather than here.
+    unsafe fn borrowed(
+        &self,
+        texture: *mut core::ffi::c_void,
+        drawable: *mut core::ffi::c_void,
+        width: u32,
+        height: u32,
+    ) -> Result<Target, Error> {
+        if texture.is_null() || width == 0 || height == 0 {
+            return Err(Error::BadTarget);
+        }
+        let _pool = Pool::new();
+        let format = match unsafe { metal::texture_pixel_format(texture) } {
+            metal::PIXEL_FORMAT_RGBA8_UNORM => SurfaceFormat::Rgba8Unorm,
+            metal::PIXEL_FORMAT_BGRA8_UNORM => SurfaceFormat::Bgra8Unorm,
+            _ => return Err(Error::BadTarget),
+        };
+        let texture = unsafe { super::objc::retain(texture) }.ok_or(Error::BadTarget)?;
+        let drawable = if drawable.is_null() {
+            None
+        } else {
+            Some(unsafe { super::objc::retain(drawable) }.ok_or(Error::BadTarget)?)
+        };
+        Ok(Target {
+            texture,
+            readback: None,
+            drawable,
+            format,
+            clear: Some(TRANSPARENT),
+            width,
+            height,
+            device: self.device_id,
+            pending: None,
+        })
     }
 
     pub fn read_pixels<'t>(&self, target: &'t mut Target) -> Result<&'t [u8], Error> {
         if target.device != self.device_id || target.width == 0 || target.height == 0 {
             return Err(Error::BadTarget);
         }
+        let Some(readback) = target.readback.as_ref().map(Owned::id) else {
+            return Err(Error::BadTarget);
+        };
         let _pool = Pool::new();
         self.wait(target)?;
 
@@ -252,7 +402,7 @@ impl Renderer {
             metal::blit_texture_to_buffer(
                 encoder,
                 target.texture.id(),
-                target.readback.id(),
+                readback,
                 target.width,
                 target.height,
             );
@@ -334,13 +484,23 @@ impl Renderer {
             metal::write_buffer(instance_buf.id(), instances);
         }
 
+        let pipelines = match target.format {
+            SurfaceFormat::Rgba8Unorm => &self.rgba,
+            SurfaceFormat::Bgra8Unorm => &self.bgra,
+        };
         let pipeline = match mode {
-            Mode::Grayscale => &self.grayscale,
-            Mode::Subpixel => &self.subpixel,
+            Mode::Grayscale => &pipelines.grayscale,
+            Mode::Subpixel => &pipelines.subpixel,
         };
 
         unsafe {
-            let pass = metal::render_pass(target.texture.id());
+            let clear = target.clear.map(|c| metal::ClearColor {
+                red: f64::from(c.r) / 255.0,
+                green: f64::from(c.g) / 255.0,
+                blue: f64::from(c.b) / 255.0,
+                alpha: f64::from(c.a) / 255.0,
+            });
+            let pass = metal::render_pass(target.texture.id(), clear);
             let commands: Id = send0(self.queue.id(), sel(c"commandBuffer"));
             let encoder: Id =
                 send1(commands, sel(c"renderCommandEncoderWithDescriptor:"), pass);
@@ -361,16 +521,25 @@ impl Renderer {
             }
             metal::set_vertex_bytes(encoder, &uniform, PROJECTION_INDEX);
 
-            send4::<u64, u64, u64, u64, ()>(
-                encoder,
-                sel(c"drawPrimitives:vertexStart:vertexCount:instanceCount:"),
-                metal::PRIMITIVE_TRIANGLE_STRIP,
-                0,
-                super::HULL_VERTICES as u64,
-                instances.len() as u64,
-            );
+            // An instance count of zero is a validation error, not a no-op, so the pass is still
+            // encoded – the caller gets the clear – and only the draw is skipped.
+            if !instances.is_empty() {
+                send4::<u64, u64, u64, u64, ()>(
+                    encoder,
+                    sel(c"drawPrimitives:vertexStart:vertexCount:instanceCount:"),
+                    metal::PRIMITIVE_TRIANGLE_STRIP,
+                    0,
+                    super::HULL_VERTICES as u64,
+                    instances.len() as u64,
+                );
+            }
 
             metal::send_void(encoder, sel(c"endEncoding"));
+            // Presentation rides the command buffer carrying the draw, so the queue orders the two
+            // and nothing has to wait on anything.
+            if let Some(drawable) = target.drawable.as_ref() {
+                metal::present_drawable(commands, drawable.id());
+            }
             metal::send_void(commands, sel(c"commit"));
 
             slot.inflight = super::objc::retain(commands);

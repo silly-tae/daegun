@@ -49,7 +49,7 @@ fn coefficients(mode: Blend, a_s: f32, a_b: f32) -> (f32, f32) {
 
 // Two stages, which is the specification's structure rather than a choice here: the source is
 // blended against the backdrop only where they overlap, `Cs' = (1 - ab)*Cs + ab*B(Cb, Cs)`, so the
-// source keeps its own colour where there is no backdrop – which is why it is not simply B(Cb, Cs).
+// source keeps its own color where there is no backdrop – which is why it is not simply B(Cb, Cs).
 pub fn composite(mode: Blend, cs: Rgb, a_s: f32, cb: Rgb, a_b: f32) -> (Rgb, f32) {
     let (a_s, a_b) = (a_s.clamp(0.0, 1.0), a_b.clamp(0.0, 1.0));
     let b = blend(mode, cb, cs);

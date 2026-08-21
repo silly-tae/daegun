@@ -1338,7 +1338,7 @@ fn shape_bidi_tells_each_run_what_surrounds_it() {
         }).expect("the reference shapes");
         assert_eq!(
             r.run.glyphs, reference.glyphs,
-            "run {i} of {text:?} was shaped without knowing its neighbours",
+            "run {i} of {text:?} was shaped without knowing its neighbors",
         );
     }
 }
@@ -2179,12 +2179,12 @@ fn a_gradient_can_be_sampled_without_engine_internals() {
             let daegun::paint::Paint::Gradient(g) = paint else { continue };
 
             let ramp = daegun::paint::gradient::Ramp::new(g, transform);
-            let colours: Vec<_> = (0..64)
+            let colors: Vec<_> = (0..64)
                 .filter_map(|i| ramp.at(f64::from(i) * 16.0, f64::from(i) * 8.0))
                 .collect();
-            assert!(!colours.is_empty(), "gid {gid}: a gradient sampled to nothing anywhere");
+            assert!(!colors.is_empty(), "gid {gid}: a gradient sampled to nothing anywhere");
             assert!(
-                colours.iter().any(|c| c.a > 0),
+                colors.iter().any(|c| c.a > 0),
                 "gid {gid}: every sample was fully transparent",
             );
             sampled += 1;
@@ -2356,23 +2356,23 @@ fn a_composed_transform_can_be_undone() {
 }
 
 #[test]
-fn fading_a_colour_by_nothing_meaningful_leaves_it_alone() {
+fn fading_a_color_by_nothing_meaningful_leaves_it_alone() {
     use daegun::paint::Rgba;
     let c = Rgba::opaque(10, 20, 30);
 
     assert_eq!(c.fade(1.0).a, 255, "a full factor changed the alpha");
     assert_eq!(c.fade(0.5).a, 128, "half of 255 was not 128");
-    assert_eq!(c.fade(0.0).a, 0, "a zero factor left the colour visible");
+    assert_eq!(c.fade(0.0).a, 0, "a zero factor left the color visible");
 
     assert_eq!(c.fade(2.0).a, 255, "a factor above one did not clamp");
     assert_eq!(c.fade(-1.0).a, 0, "a factor below zero did not clamp");
 
     for (name, by) in [("NaN", f64::NAN), ("inf", f64::INFINITY), ("-inf", f64::NEG_INFINITY)] {
-        assert_eq!(c.fade(by), c, "fade({name}) changed the colour instead of leaving it alone");
+        assert_eq!(c.fade(by), c, "fade({name}) changed the color instead of leaving it alone");
     }
 
     let faded = c.fade(0.25);
-    assert_eq!((faded.r, faded.g, faded.b), (10, 20, 30), "fade touched a colour channel");
+    assert_eq!((faded.r, faded.g, faded.b), (10, 20, 30), "fade touched a color channel");
 }
 
 #[test]

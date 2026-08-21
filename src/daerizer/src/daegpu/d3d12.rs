@@ -3,6 +3,24 @@
 // must be recording, and every resource must already be in the state its command requires –
 // which `barrier` is what maintains, tracked per target in `state`.
 
+use super::backend::SurfaceFormat;
+pub use super::backend::SurfaceFormat as Format;
+
+const TRANSPARENT: crate::daerizer::Rgba = crate::daerizer::Rgba { r: 0, g: 0, b: 0, a: 0 };
+
+fn dxgi_format(format: SurfaceFormat) -> i32 {
+    match format {
+        SurfaceFormat::Rgba8Unorm => d3d::FORMAT_R8G8B8A8_UNORM,
+        SurfaceFormat::Bgra8Unorm => d3d::FORMAT_B8G8R8A8_UNORM,
+    }
+}
+
+// A PSO bakes its render target formats in, so one pair per byte order.
+struct Pipelines {
+    grayscale: *mut d3d::Unknown,
+    subpixel: *mut d3d::Unknown,
+}
+
 use super::direct3d as d3d;
 
 pub use super::direct3d::{RESOURCE_STATE_COPY_SOURCE, RESOURCE_STATE_RENDER_TARGET};
@@ -106,8 +124,8 @@ pub struct Renderer {
     fence_value: Cell<u64>,
     event: Option<d3d::Event>,
     root: *mut d3d::Unknown,
-    grayscale: *mut d3d::Unknown,
-    subpixel: *mut d3d::Unknown,
+    rgba: Pipelines,
+    bgra: Pipelines,
     srv_heap: *mut d3d::Unknown,
     srv_stride: u32,
     per_draw: RefCell<PerDraw>,
@@ -115,6 +133,62 @@ pub struct Renderer {
 }
 
 impl Renderer {
+    // The device and queue behind this renderer, for building a swapchain on the device daegun
+    // made. They are daegun's and die with it.
+    pub unsafe fn handles(&self) -> (*mut core::ffi::c_void, *mut core::ffi::c_void) {
+        (self.device.cast(), self.queue.cast())
+    }
+
+    // A backbuffer belongs to the device its swapchain was made on, so drawing into one needs the
+    // caller's device. Taking the caller's queue too orders the draw against their `Present` with no
+    // fence between them. daegun takes a COM reference on each and releases only those.
+    pub unsafe fn from_device(
+        device: *mut core::ffi::c_void,
+        queue: *mut core::ffi::c_void,
+    ) -> Result<Renderer, Error> {
+        if device.is_null() || queue.is_null() {
+            return Err(Error::NoDevice);
+        }
+        let Some(d3d12) = d3d::Library::open(c"d3d12.dll") else {
+            return Err(Error::NoDevice);
+        };
+        let Some(compiler) = d3d::Library::open(c"d3dcompiler_47.dll") else {
+            return Err(Error::MissingEntryPoint("d3dcompiler_47.dll"));
+        };
+        let compile: d3d::PfnCompile = unsafe { compiler.symbol(c"D3DCompile") }
+            .ok_or(Error::MissingEntryPoint("D3DCompile"))?;
+
+        let device = unsafe { d3d::add_ref(device.cast::<d3d::Unknown>()) };
+        let (adapter, software) = unsafe { Self::adapter_of(device) };
+        let mut r = Renderer {
+            _d3d12: d3d12,
+            _compiler: compiler,
+            compile,
+            device,
+            adapter,
+            software,
+            queue: unsafe { d3d::add_ref(queue.cast::<d3d::Unknown>()) },
+            allocator: core::ptr::null_mut(),
+            list: core::ptr::null_mut(),
+            fence: core::ptr::null_mut(),
+            fence_value: Cell::new(0),
+            event: d3d::Event::new(),
+            root: core::ptr::null_mut(),
+            rgba: Pipelines { grayscale: core::ptr::null_mut(), subpixel: core::ptr::null_mut() },
+            bgra: Pipelines { grayscale: core::ptr::null_mut(), subpixel: core::ptr::null_mut() },
+            srv_heap: core::ptr::null_mut(),
+            srv_stride: 0,
+            per_draw: RefCell::new(PerDraw {
+                instances: Buffer::EMPTY,
+                subpixel: Buffer::EMPTY,
+                projection: Buffer::EMPTY,
+            }),
+            feature_level: 0,
+        };
+        r.build()?;
+        Ok(r)
+    }
+
     pub fn new() -> Result<Renderer, Error> {
         let Some(d3d12) = d3d::Library::open(c"d3d12.dll") else {
             return Err(Error::NoDevice);
@@ -164,8 +238,8 @@ impl Renderer {
             fence_value: Cell::new(0),
             event: d3d::Event::new(),
             root: core::ptr::null_mut(),
-            grayscale: core::ptr::null_mut(),
-            subpixel: core::ptr::null_mut(),
+            rgba: Pipelines { grayscale: core::ptr::null_mut(), subpixel: core::ptr::null_mut() },
+            bgra: Pipelines { grayscale: core::ptr::null_mut(), subpixel: core::ptr::null_mut() },
             srv_heap: core::ptr::null_mut(),
             srv_stride: 0,
             per_draw: RefCell::new(PerDraw {
@@ -290,14 +364,14 @@ impl Renderer {
             node_mask: 0,
         };
         let mut queue = core::ptr::null_mut();
-        {
+        if self.queue.is_null() {
             let d = self.dev();
             let hr = unsafe {
                 (d.create_command_queue)(self.device, &queue_desc, &d3d::IID_D12_QUEUE, &mut queue)
             };
             check("CreateCommandQueue", hr)?;
+            self.queue = queue;
         }
-        self.queue = queue;
 
         let mut allocator = core::ptr::null_mut();
         {
@@ -490,7 +564,7 @@ impl Renderer {
 
         let mut rtv_formats = [0i32; 8];
         rtv_formats[0] = d3d::FORMAT_R8G8B8A8_UNORM;
-        let base = d3d::GraphicsPipelineStateDesc {
+        let mut base = d3d::GraphicsPipelineStateDesc {
             root_signature: self.root,
             vs: d3d::ShaderBytecode { bytecode: vs.as_ptr().cast::<c_void>(), length: vs.len() },
             ps: d3d::ShaderBytecode::default(),
@@ -514,25 +588,49 @@ impl Renderer {
             flags: d3d::PIPELINE_STATE_FLAG_NONE,
         };
 
-        for (ps, blend, out) in [
-            (&ps_gray, none, 0usize),
-            (&ps_sub, dual, 1usize),
-        ] {
-            let desc = d3d::GraphicsPipelineStateDesc {
-                ps: d3d::ShaderBytecode { bytecode: ps.as_ptr().cast::<c_void>(), length: ps.len() },
-                blend_state: blend,
-                ..base
+        for format in [SurfaceFormat::Rgba8Unorm, SurfaceFormat::Bgra8Unorm] {
+            base.rtv_formats[0] = dxgi_format(format);
+            let mut made = Pipelines {
+                grayscale: core::ptr::null_mut(),
+                subpixel: core::ptr::null_mut(),
             };
-            let mut pso = core::ptr::null_mut();
-            let hr = unsafe {
-                (self.dev().create_graphics_pipeline_state)(
-                    self.device, &desc, &d3d::IID_D12_PIPELINE_STATE, &mut pso,
-                )
-            };
-            check("CreateGraphicsPipelineState", hr)?;
-            if out == 0 { self.grayscale = pso } else { self.subpixel = pso }
+            for (ps, blend, gray) in [(&ps_gray, none, true), (&ps_sub, dual, false)] {
+                let desc = d3d::GraphicsPipelineStateDesc {
+                    ps: d3d::ShaderBytecode {
+                        bytecode: ps.as_ptr().cast::<c_void>(),
+                        length: ps.len(),
+                    },
+                    blend_state: blend,
+                    ..base
+                };
+                let mut pso = core::ptr::null_mut();
+                let hr = unsafe {
+                    (self.dev().create_graphics_pipeline_state)(
+                        self.device, &desc, &d3d::IID_D12_PIPELINE_STATE, &mut pso,
+                    )
+                };
+                if let Err(e) = check("CreateGraphicsPipelineState", hr) {
+                    unsafe {
+                        d3d::release(made.subpixel);
+                        d3d::release(made.grayscale);
+                    }
+                    return Err(e);
+                }
+                if gray { made.grayscale = pso } else { made.subpixel = pso }
+            }
+            match format {
+                SurfaceFormat::Rgba8Unorm => self.rgba = made,
+                SurfaceFormat::Bgra8Unorm => self.bgra = made,
+            }
         }
         Ok(())
+    }
+
+    fn formatted(&self, format: SurfaceFormat) -> &Pipelines {
+        match format {
+            SurfaceFormat::Rgba8Unorm => &self.rgba,
+            SurfaceFormat::Bgra8Unorm => &self.bgra,
+        }
     }
 
     fn compile_stage(&self, stage: super::ShaderStage, target: &CStr) -> Result<Vec<u8>, Error> {
@@ -706,8 +804,10 @@ impl Drop for Renderer {
             per.subpixel.destroy();
             per.projection.destroy();
             d3d::release(self.srv_heap);
-            d3d::release(self.subpixel);
-            d3d::release(self.grayscale);
+            d3d::release(self.bgra.subpixel);
+            d3d::release(self.bgra.grayscale);
+            d3d::release(self.rgba.subpixel);
+            d3d::release(self.rgba.grayscale);
             d3d::release(self.root);
             d3d::release(self.fence);
             d3d::release(self.list);
@@ -719,6 +819,10 @@ impl Drop for Renderer {
 }
 
 pub struct Target {
+    format: SurfaceFormat,
+    clear: Option<crate::daerizer::Rgba>,
+    // A borrowed texture is the caller's. daegun holds a COM reference and releases only that.
+    borrowed: bool,
     texture: *mut d3d::Unknown,
     rtv_heap: *mut d3d::Unknown,
     rtv: d3d::CpuDescriptorHandle,
@@ -733,6 +837,19 @@ pub struct Target {
 }
 
 impl Target {
+    pub fn format(&self) -> SurfaceFormat {
+        self.format
+    }
+
+    pub fn clear(&self) -> Option<crate::daerizer::Rgba> {
+        self.clear
+    }
+
+    // `None` keeps what the target already holds instead of clearing.
+    pub fn set_clear(&mut self, clear: Option<crate::daerizer::Rgba>) {
+        self.clear = clear;
+    }
+
     pub fn width(&self) -> u32 {
         self.width
     }
@@ -811,7 +928,71 @@ pub fn ortho(width: u32, height: u32) -> [f32; 16] {
 }
 
 impl Renderer {
+    // `texture` must be a live `ID3D12Resource` on this device, at least `width` by `height`, with
+    // the given format and the render-target flag. daegun holds a COM reference and releases only
+    // that, and leaves the resource in `RENDER_TARGET` – transitioning to `PRESENT` is the caller's.
+    pub unsafe fn target_from_texture(
+        &self,
+        texture: *mut core::ffi::c_void,
+        width: u32,
+        height: u32,
+        format: SurfaceFormat,
+    ) -> Result<Target, Error> {
+        if texture.is_null() || width == 0 || height == 0 {
+            return Err(Error::BadTarget);
+        }
+        let texture = texture.cast::<d3d::Unknown>();
+        let heap_desc = d3d::DescriptorHeapDesc {
+            kind: d3d::DESCRIPTOR_HEAP_TYPE_RTV,
+            num_descriptors: 1,
+            flags: d3d::DESCRIPTOR_HEAP_FLAG_NONE,
+            node_mask: 0,
+        };
+        let d = self.dev();
+        let mut rtv_heap = core::ptr::null_mut();
+        unsafe {
+            check("CreateDescriptorHeap (rtv)", (d.create_descriptor_heap)(
+                self.device, &heap_desc, &d3d::IID_D12_DESCRIPTOR_HEAP, &mut rtv_heap,
+            ))?;
+        }
+        let rtv = unsafe {
+            let v = &*(*rtv_heap).vtable.cast::<d3d::D12HeapVtbl>();
+            let mut handle = d3d::CpuDescriptorHandle::default();
+            (v.get_cpu_descriptor_handle_for_heap_start)(rtv_heap, &mut handle);
+            (d.create_render_target_view)(self.device, texture, core::ptr::null(), handle);
+            handle
+        };
+
+        Ok(Target {
+            format,
+            clear: Some(TRANSPARENT),
+            borrowed: true,
+            texture: unsafe { d3d::add_ref(texture) },
+            rtv_heap,
+            rtv,
+            readback: core::ptr::null_mut(),
+            width,
+            height,
+            row_pitch: align_up(width * 4, d3d::TEXTURE_DATA_PITCH_ALIGNMENT),
+            state: Cell::new(d3d::RESOURCE_STATE_RENDER_TARGET),
+            pixels: Vec::new(),
+            device: unsafe { d3d::add_ref(self.device) },
+            pending: None,
+        })
+    }
+
     pub fn target(&self, width: u32, height: u32) -> Result<Target, Error> {
+        self.target_with_format(width, height, SurfaceFormat::Rgba8Unorm)
+    }
+
+    // An offscreen target in the caller's byte order. A DXGI swapchain is BGRA, so a caller
+    // compositing daegun's output into one wants to match rather than swizzle.
+    pub fn target_with_format(
+        &self,
+        width: u32,
+        height: u32,
+        format: SurfaceFormat,
+    ) -> Result<Target, Error> {
         if width == 0 || height == 0 {
             return Err(Error::BadTarget);
         }
@@ -825,7 +1006,7 @@ impl Renderer {
             height,
             depth_or_array_size: 1,
             mip_levels: 1,
-            format: d3d::FORMAT_R8G8B8A8_UNORM,
+            format: dxgi_format(format),
             sample_desc: d3d::SampleDesc { count: 1, quality: 0 },
             layout: d3d::TEXTURE_LAYOUT_UNKNOWN,
             flags: d3d::RESOURCE_FLAG_ALLOW_RENDER_TARGET,
@@ -884,6 +1065,9 @@ impl Renderer {
         };
 
         let target = Target {
+            format,
+            clear: Some(TRANSPARENT),
+            borrowed: false,
             texture,
             rtv_heap,
             rtv,
@@ -990,8 +1174,8 @@ impl Renderer {
             target.height as f32,
         );
         let pipeline = match mode {
-            Mode::Grayscale => self.grayscale,
-            Mode::Subpixel => self.subpixel,
+            Mode::Grayscale => self.formatted(target.format).grayscale,
+            Mode::Subpixel => self.formatted(target.format).subpixel,
         };
         self.begin(pipeline)?;
 
@@ -1038,7 +1222,10 @@ impl Renderer {
         unsafe {
             self.barrier(target.texture, target.state.get(), d3d::RESOURCE_STATE_RENDER_TARGET);
             (c.om_set_render_targets)(self.list, 1, &target.rtv, 0, core::ptr::null());
-            (c.clear_render_target_view)(self.list, target.rtv, [0.0f32; 4].as_ptr(), 0, core::ptr::null());
+            if let Some(c0) = target.clear {
+                let rgba = [c0.r, c0.g, c0.b, c0.a].map(|v| f32::from(v) / 255.0);
+                (c.clear_render_target_view)(self.list, target.rtv, rgba.as_ptr(), 0, core::ptr::null());
+            }
             (c.set_graphics_root_signature)(self.list, self.root);
             (c.set_descriptor_heaps)(self.list, 1, &self.srv_heap);
 
@@ -1086,6 +1273,11 @@ impl Renderer {
     }
 
     pub fn read_pixels<'t>(&self, target: &'t mut Target) -> Result<&'t [u8], Error> {
+        // A borrowed resource has no readback buffer of its own, and a caller drawing into its own
+        // backbuffer does not want the copy.
+        if target.borrowed {
+            return Err(Error::BadTarget);
+        }
         if target.device != self.device || target.width == 0 || target.height == 0 {
             return Err(Error::BadTarget);
         }
@@ -1099,7 +1291,7 @@ impl Renderer {
             placed_footprint: d3d::PlacedSubresourceFootprint {
                 offset: 0,
                 footprint: d3d::SubresourceFootprint {
-                    format: d3d::FORMAT_R8G8B8A8_UNORM,
+                    format: dxgi_format(target.format),
                     width: target.width,
                     height: target.height,
                     depth: 1,

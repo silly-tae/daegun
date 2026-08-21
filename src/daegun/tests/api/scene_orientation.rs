@@ -48,14 +48,14 @@ fn through_rasterizer(f: &Font, gid: u16) -> Vec<i32> {
     })
 }
 
-/// The two renderers must agree which way up a glyph is.
-///
-/// They did not. `Geometry::finalize` puts a path's ymax at raster row 0, which is the flip into
-/// raster order the CPU rasterizer wants because it is handed y-up font outlines — but the paint
-/// stage had already flipped through `to_device`, so every filled path came out mirrored. Nothing
-/// caught it: the COLR fixtures are circles and gradients, symmetric top to bottom, and a flip is
-/// invisible on them. `Font::render_colr_glyph` builds exactly this scene, so every colour glyph
-/// daegun drew was upside down.
+// The two renderers must agree which way up a glyph is.
+//
+// They did not. `Geometry::finalize` puts a path's ymax at raster row 0, which is the flip into
+// raster order the CPU rasterizer wants because it is handed y-up font outlines — but the paint
+// stage had already flipped through `to_device`, so every filled path came out mirrored. Nothing
+// caught it: the COLR fixtures are circles and gradients, symmetric top to bottom, and a flip is
+// invisible on them. `Font::render_colr_glyph` builds exactly this scene, so every color glyph
+// daegun drew was upside down.
 #[test]
 fn a_filled_path_faces_the_same_way_the_rasterizer_draws_it() {
     let f = font();
@@ -79,10 +79,10 @@ fn a_filled_path_faces_the_same_way_the_rasterizer_draws_it() {
     }
 }
 
-/// The cheapest statement of the same thing, in case the profile above is ever relaxed.
-///
-/// A `T` carries almost all its ink in the top fifth and almost none in the bottom fifth. Mirrored,
-/// that reverses, which no tolerance can absorb.
+// The cheapest statement of the same thing, in case the profile above is ever relaxed.
+//
+// A `T` carries almost all its ink in the top fifth and almost none in the bottom fifth. Mirrored,
+// that reverses, which no tolerance can absorb.
 #[test]
 fn a_t_is_top_heavy_through_the_paint_stage() {
     let f = font();
@@ -108,12 +108,12 @@ fn a_t_is_top_heavy_through_the_paint_stage() {
     );
 }
 
-/// The two renderers must also agree how round a curve is, not merely which way up it faces.
-///
-/// The paint stage flattens a path that is already in device pixels, so its tolerance has to be
-/// stated in pixels. It passed `Geometry::new(self.px, self.px)`, an area bound of 6 square pixels,
-/// where the CPU rasterizer effectively uses about 0.05 — a hundred times tighter. Curves came out
-/// visibly faceted, worst by 0.63 of full coverage on a single pixel of an `8`.
+// The two renderers must also agree how round a curve is, not merely which way up it faces.
+//
+// The paint stage flattens a path that is already in device pixels, so its tolerance has to be
+// stated in pixels. It passed `Geometry::new(self.px, self.px)`, an area bound of 6 square pixels,
+// where the CPU rasterizer effectively uses about 0.05 — a hundred times tighter. Curves came out
+// visibly faceted, worst by 0.63 of full coverage on a single pixel of an `8`.
 #[test]
 fn a_curve_is_as_round_through_the_paint_stage_as_through_the_rasterizer() {
     let f = font();

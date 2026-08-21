@@ -1,5 +1,5 @@
 // The machinery ~200 entry points are built from, so all of them can be mechanical. C has no
-// borrow checker, so a mistake here is undefined behaviour rather than a compile error:
+// borrow checker, so a mistake here is undefined behavior rather than a compile error:
 //
 //   1. A fallible call returns `Status` and writes its result through an out-parameter.
 //   2. A null pointer is `Status::Null`, never a dereference.

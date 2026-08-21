@@ -276,7 +276,7 @@ fn isolating_run_sequences(classes: &[Class], levels: &[u8], base_level: u8) -> 
         }
 
         let level = levels[indices[0]];
-        // X10: sos/eos come from the higher of this sequence's level and its neighbour's.
+        // X10: sos/eos come from the higher of this sequence's level and its neighbor's.
         let before = prev_kept_level(&kept, levels, indices[0], base_level);
         let last = *indices.last().unwrap_or(&0);
         let after = if classes[last].is_isolate_initiator() && matching_pdi(classes, last) >= n {

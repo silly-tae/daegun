@@ -330,7 +330,12 @@ fn draw_glyph_outline(cache: &FontCache, gid: u16, pen: &mut dyn crate::daecore:
     }
 }
 
+// A counter rather than anything derived from the font's bytes: an address can be reused once a
+// `Font` drops, and a batch can outlive the font that filled it.
+static NEXT_FONT_ID: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(1);
+
 pub struct Font {
+    id: usize,
     cache: FontCache,
     is_cff2: bool,
     glyphs: crate::sync::Mutable<glyphcache::cache::GlyphCache>,
@@ -375,6 +380,7 @@ impl Font {
     fn wrap(cache: FontCache) -> Font {
         let is_cff2 = cache.table_map.contains_key("CFF2");
         Font {
+            id: NEXT_FONT_ID.fetch_add(1, core::sync::atomic::Ordering::Relaxed),
             cache,
             is_cff2,
             glyphs: crate::sync::mutable(glyphcache::cache::glyph_cache(DEFAULT_GLYPH_CACHE_BYTES)),

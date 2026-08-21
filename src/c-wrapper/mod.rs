@@ -31,7 +31,7 @@ use options::RasterOptionsC;
 #[unsafe(no_mangle)]
 pub extern "C" fn daegun_abi_version() -> u32 {
     const MAJOR: u32 = 1;
-    const MINOR: u32 = 0;
+    const MINOR: u32 = 1;
     const PATCH: u32 = 0;
     (MAJOR << 16) | (MINOR << 8) | PATCH
 }
@@ -39,6 +39,16 @@ pub extern "C" fn daegun_abi_version() -> u32 {
 std::thread_local! {
     static LAST_ERROR: core::cell::RefCell<Option<handle::OwnedStr>> =
         const { core::cell::RefCell::new(None) };
+}
+
+// A NULL foreground means the caller did not name one, matching how opts, policy and device are
+// already allowed to be NULL here.
+pub(crate) unsafe fn rgba_of(p: *const u8) -> Option<crate::daerizer::Rgba> {
+    if p.is_null() {
+        return None;
+    }
+    let c = unsafe { core::slice::from_raw_parts(p, 4) };
+    Some(crate::daerizer::Rgba { r: c[0], g: c[1], b: c[2], a: c[3] })
 }
 
 pub(crate) fn set_error(message: &str) {
@@ -87,7 +97,7 @@ pub unsafe extern "C" fn daegun_font_buffer_free(data: *mut u8, len: usize) {
         return;
     }
     // `daegun_font_buffer_new` is the only source and allocates capacity exactly `len`, which is
-    // what makes reconstructing the Vec sound. A pointer from anywhere else is undefined behaviour.
+    // what makes reconstructing the Vec sound. A pointer from anywhere else is undefined behavior.
     drop(unsafe { alloc::vec::Vec::from_raw_parts(data, len, len) });
 }
 

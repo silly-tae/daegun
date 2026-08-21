@@ -123,6 +123,12 @@ if ! sh scripts/tools/c-parity.sh; then
   exit 1
 fi
 
+printf 'abi parity ....... '
+# The tool prints a block per library, which is what someone running it by hand wants. The gate
+# wants one line, so keep the summary and show the whole thing only when it fails.
+abi_out=$(python3 scripts/tools/abi-parity.py) || { echo "issues"; echo "$abi_out"; exit 1; }
+echo "$abi_out" | tail -1
+
 if rustup run 1.97.1 rustc --version >/dev/null 2>&1; then
   printf 'MSRV 1.97.1 ........ '
   [ "$(rustup run 1.97.1 cargo check --all-features 2>&1 | grep -cE '^error')" -eq 0 ] && echo clean || { echo "issues"; exit 1; }

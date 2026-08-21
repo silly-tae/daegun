@@ -94,7 +94,7 @@ typedef struct daegun_font daegun_font;
  * is not detectable any other way. */
 uint32_t daegun_abi_version(void);
 
-#define DAEGUN_ABI_VERSION ((1u << 16) | (0u << 8) | 0u)
+#define DAEGUN_ABI_VERSION ((1u << 16) | (1u << 8) | 0u)
 
 /* What the last failing call ON THIS THREAD said, as UTF-8. Empty when nothing has failed.
  *
@@ -986,10 +986,10 @@ void daegun_glyph_bitmap_free(daegun_glyph_bitmap *b);
  *   SWEEP_GRADIENT    [0..4) = cx, cy, start_angle, end_angle
  *   TRANSFORM         [0..6) = the matrix
  *   TRANSLATE         [0..2) = dx, dy
- *   SCALE             [0..2) = sx, sy          and [4..6) = centre when has_center
- *   SCALE_UNIFORM     [0..1) = s               and [4..6) = centre when has_center
- *   ROTATE            [0..1) = angle           and [4..6) = centre when has_center
- *   SKEW              [0..2) = x_angle, y_angle and [4..6) = centre when has_center
+ *   SCALE             [0..2) = sx, sy          and [4..6) = center when has_center
+ *   SCALE_UNIFORM     [0..1) = s               and [4..6) = center when has_center
+ *   ROTATE            [0..1) = angle           and [4..6) = center when has_center
+ *   SKEW              [0..2) = x_angle, y_angle and [4..6) = center when has_center
  *
  * Fixed at eight so there is no variant-dependent layout to get wrong. */
 #define DAEGUN_PAINT_LAYERS           0
@@ -1039,6 +1039,14 @@ void daegun_paint_free(daegun_paint *p);
 daegun_status daegun_font_render_colr_glyph(const daegun_font *font, uint16_t gid, float px,
                                             const daegun_axis *axes, size_t axes_len,
                                             uint16_t palette_index, daegun_scene **out);
+
+/* The same, with the text color a COLR layer takes when it defers to the caller instead of naming a
+ * palette entry. foreground is four bytes, RGBA; NULL means opaque black, as the call above uses. */
+daegun_status daegun_font_render_colr_glyph_with(const daegun_font *font, uint16_t gid, float px,
+                                                 const daegun_axis *axes, size_t axes_len,
+                                                 uint16_t palette_index,
+                                                 const uint8_t foreground[4],
+                                                 daegun_scene **out);
 const uint8_t *daegun_scene_rgba(const daegun_scene *s, size_t *out_len, size_t *out_width,
                                  size_t *out_height, int32_t *out_left, int32_t *out_top,
                                  size_t *out_skipped_ops);
@@ -1112,6 +1120,13 @@ daegun_status daegun_font_gpu_glyph(const daegun_font *font, daegun_batch *batch
 daegun_status daegun_font_gpu_color_glyph(const daegun_font *font, daegun_batch *batch,
                                           uint16_t gid, const daegun_axis *axes, size_t axes_len,
                                           uint16_t palette_index, daegun_color_slots **out);
+
+/* The same, with the text color for layers that defer to it. NULL foreground means opaque black. */
+daegun_status daegun_font_gpu_color_glyph_with(const daegun_font *font, daegun_batch *batch,
+                                               uint16_t gid, const daegun_axis *axes,
+                                               size_t axes_len, uint16_t palette_index,
+                                               const uint8_t foreground[4],
+                                               daegun_color_slots **out);
 const daegun_color_slot *daegun_color_slots_data(const daegun_color_slots *slots,
                                                  size_t *out_count);
 void daegun_color_slots_free(daegun_color_slots *slots);
@@ -1154,6 +1169,14 @@ daegun_status daegun_font_draw_glyph(const daegun_font *font, daegun_batch *batc
                                      float px, const daegun_axis *axes, size_t axes_len,
                                      const daegun_raster_options *opts, int32_t palette,
                                      daegun_drawn **out);
+
+/* The same, with the text color for layers that defer to it. NULL foreground means opaque black. */
+daegun_status daegun_font_draw_glyph_with(const daegun_font *font, daegun_batch *batch,
+                                          const void *device, const daegun_policy *policy,
+                                          uint16_t gid, float px, const daegun_axis *axes,
+                                          size_t axes_len, const daegun_raster_options *opts,
+                                          int32_t palette, const uint8_t foreground[4],
+                                          daegun_drawn **out);
 
 daegun_status daegun_drawn_kind(const daegun_drawn *d, int32_t *out);
 daegun_status daegun_drawn_is_ok(const daegun_drawn *d, bool *out);
@@ -1747,6 +1770,14 @@ daegun_status daegun_route(int32_t attempt, const daegun_request *request,
     daegun_status daegun_##b##_target_pixel(const daegun_##b##_target *target,                      \
                                             uint32_t x, uint32_t y, uint8_t *out);                  \
     void daegun_##b##_target_free(daegun_##b##_target *target);                                     \
+    /* An offscreen target in the caller's byte order. format is a DAEGUN_SURFACE_* value. */        \
+    daegun_status daegun_##b##_target_with_format(const daegun_##b##_renderer *renderer,             \
+                                                  uint32_t width, uint32_t height, int32_t format,   \
+                                                  daegun_##b##_target **out);                        \
+    /* What the target clears to before each draw, four bytes RGBA. NULL keeps what it already       \
+     * holds, which is how a second geometry draws over the first rather than erasing it. */         \
+    daegun_status daegun_##b##_target_set_clear(daegun_##b##_target *target,                         \
+                                                const uint8_t clear[4]);                             \
                                                                                                    \
     daegun_status daegun_##b##_geometry_new(const daegun_##b##_renderer *renderer,                      \
                                         const daegun_batch *batch,                                  \
@@ -1780,17 +1811,63 @@ daegun_status daegun_route(int32_t attempt, const daegun_request *request,
     const uint8_t *daegun_##b##_read_pixels(const daegun_##b##_renderer *renderer,                  \
                                             daegun_##b##_target *target, size_t *out_count)
 
+/* The byte order of a surface. CAMetalLayer and most swapchains are BGRA; daegun's own offscreen
+ * targets are RGBA unless asked otherwise. */
+#define DAEGUN_SURFACE_RGBA8 0
+#define DAEGUN_SURFACE_BGRA8 1
+
 #if defined(__APPLE__)
 DAEGUN_DECLARE_BACKEND(metal);
+
 /* Metal only: re-uploads into an existing geometry if the batch changed, and does nothing if it did
  * not – so it may be called every frame. The plain _geometry call allocates a new upload each time.
  * The other three backends have no equivalent to translate. */
 daegun_status daegun_metal_geometry_sync(daegun_metal_geometry *geometry,
                                          const daegun_metal_renderer *renderer,
                                          const daegun_batch *batch);
+
+/* Adopts a device the caller already made, which is what lets daegun draw into that device's
+ * surfaces: a drawable's texture belongs to the device its CAMetalLayer was created on. daegun
+ * retains the device and releases only its own reference, so it survives the renderer even if you
+ * release yours first. */
+daegun_status daegun_metal_renderer_from_device(void *device, daegun_metal_renderer **out);
+
+/* A target over an MTLTexture daegun did not create. No format argument, unlike the other three
+ * backends: the texture carries its own, and anything but RGBA8 or BGRA8 answers DAEGUN_RANGE. */
+daegun_status daegun_metal_target_from_texture(const daegun_metal_renderer *renderer, void *texture,
+                                               uint32_t width, uint32_t height,
+                                               daegun_metal_target **out);
+
+/* The same over a CAMetalDrawable. daegun presents it on the command buffer carrying the draw, so
+ * the queue orders the two – do NOT present it yourself as well. Hold the drawable until the draw
+ * is submitted; daegun retains it and releases it with the target. */
+daegun_status daegun_metal_target_from_drawable(const daegun_metal_renderer *renderer,
+                                                void *drawable, uint32_t width, uint32_t height,
+                                                daegun_metal_target **out);
 #endif
 
 DAEGUN_DECLARE_BACKEND(vulkan);
+
+/* What the target clears to before each draw, four bytes RGBA. NULL keeps what the target already
+ * holds, which is how a second geometry draws over the first rather than erasing it. */
+
+
+/* A target over a VkImage daegun did not create, such as one acquired from a swapchain. daegun
+ * builds a view and framebuffer over it and destroys only those. It leaves the image in
+ * VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, so presenting it is still yours to arrange. */
+daegun_status daegun_vulkan_target_from_image(const daegun_vulkan_renderer *renderer,
+                                              uint64_t image, uint32_t width, uint32_t height,
+                                              int32_t format, daegun_vulkan_target **out);
+
+/* Adopts a device the caller already made, which is what lets daegun draw into that device's
+ * swapchain. daegun destroys neither the device nor the instance, so both must outlive it.
+ *
+ * dual_src_blend is what you ENABLED at device creation, not what the hardware supports: daegun
+ * cannot tell them apart, and without it there is no subpixel pipeline. */
+daegun_status daegun_vulkan_renderer_from_device(void *instance, void *physical_device,
+                                                 void *device, uint32_t queue_family,
+                                                 int32_t dual_src_blend,
+                                                 daegun_vulkan_renderer **out);
 
 #if defined(_WIN32)
 DAEGUN_DECLARE_BACKEND(d3d11);
@@ -1799,6 +1876,27 @@ DAEGUN_DECLARE_BACKEND(d3d12);
  * which daegun_policy's avoid_software_gpu exists to steer away from. */
 daegun_status daegun_d3d11_feature_level(const daegun_d3d11_renderer *renderer, daegun_text **out);
 daegun_status daegun_d3d11_is_software(const daegun_d3d11_renderer *renderer, int32_t *out);
+/* Adopts a device the caller already made, which is what lets daegun draw into that device's
+ * swapchain: a backbuffer belongs to the device its swapchain was created on. daegun takes a COM
+ * reference on each handle and releases only those.
+ *
+ * D3D11 takes the device and its immediate context. D3D12 takes the device and a direct command
+ * queue – using the caller's queue is what orders the draw against their Present without a fence. */
+daegun_status daegun_d3d11_renderer_from_device(void *device, void *context,
+                                                daegun_d3d11_renderer **out);
+daegun_status daegun_d3d12_renderer_from_device(void *device, void *queue,
+                                                daegun_d3d12_renderer **out);
+
+/* A target over a texture daegun did not create, such as a swapchain backbuffer. format is a
+ * DAEGUN_SURFACE_* value. D3D12 leaves the resource in D3D12_RESOURCE_STATE_RENDER_TARGET, so
+ * transitioning it to PRESENT is yours, as presentation itself is. */
+daegun_status daegun_d3d11_target_from_texture(const daegun_d3d11_renderer *renderer, void *texture,
+                                               uint32_t width, uint32_t height, int32_t format,
+                                               daegun_d3d11_target **out);
+daegun_status daegun_d3d12_target_from_texture(const daegun_d3d12_renderer *renderer, void *texture,
+                                               uint32_t width, uint32_t height, int32_t format,
+                                               daegun_d3d12_target **out);
+
 daegun_status daegun_d3d12_feature_level(const daegun_d3d12_renderer *renderer, daegun_text **out);
 daegun_status daegun_d3d12_is_software(const daegun_d3d12_renderer *renderer, int32_t *out);
 #endif

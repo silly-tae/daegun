@@ -72,7 +72,7 @@ fn a_variation_selector_resolves_or_declines() {
 }
 
 #[test]
-fn a_colour_glyph_renders_to_a_scene() {
+fn a_color_glyph_renders_to_a_scene() {
     let f = font(COLR);
     let colr = colr_table();
 
@@ -90,7 +90,7 @@ fn a_colour_glyph_renders_to_a_scene() {
 
     assert!(
         f.render_colr_glyph(0, 64.0, &[], 0).is_none(),
-        ".notdef rendered as a colour glyph",
+        ".notdef rendered as a color glyph",
     );
 }
 
@@ -160,7 +160,7 @@ fn a_short_strip_drops_glyph_coverage() {
 }
 
 #[test]
-fn gpu_colour_upload_refuses_what_a_tinted_outline_cannot_express() {
+fn gpu_color_upload_refuses_what_a_tinted_outline_cannot_express() {
     let f = font(COLR);
     let colr = colr_table();
     let off = daegun::daecore::daetype::decoder::read_u32_be(&colr, 14).expect("baseGlyphList offset") as usize;
@@ -183,6 +183,6 @@ fn gpu_colour_upload_refuses_what_a_tinted_outline_cannot_express() {
             Err(_) => refused += 1,
         }
     }
-    assert_eq!(flat, 3, "the fixture has exactly three flat-colour base glyphs");
+    assert_eq!(flat, 3, "the fixture has exactly three flat-color base glyphs");
     assert!(refused > 0, "no glyph was refused, so NotFlatColor is never reached on this fixture");
 }

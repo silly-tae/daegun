@@ -74,3 +74,43 @@ fn the_two_paths_agree_across_a_batch_of_many_glyphs() {
     assert_eq!(batch_a.hulls(), batch_b.hulls(), "drawn polygons diverged");
     assert_eq!(batch_a.revision(), batch_b.revision(), "revision counts diverged");
 }
+
+fn face(rel: &str) -> daegun::Font {
+    let bytes = std::fs::read(format!("{}/{rel}", fonts_dir())).expect("read font");
+    daegun::Font::from_vec(bytes).expect("parse")
+}
+
+// Without font identity in the batch key, the second face to ask for an id the first uploaded gets
+// the first one's outline back – wrong pixels, not an error.
+#[test]
+fn two_fonts_in_one_batch_keep_their_own_outlines() {
+    let inter = face("inter/InterVariable.ttf");
+    let bungee = face("bungee-tint/BungeeTint-Regular.ttf");
+
+    let mut compared = 0usize;
+    for gid in 1..500u16 {
+        let (mut own_i, mut own_b, mut shared) = (GpuBatch::new(), GpuBatch::new(), GpuBatch::new());
+        let (Ok(alone_inter), Ok(alone_bungee)) =
+            (inter.gpu_glyph(&mut own_i, gid, &[]), bungee.gpu_glyph(&mut own_b, gid, &[]))
+        else {
+            continue;
+        };
+        // The em box is intrinsic to the outline and independent of where in a batch it landed,
+        // which is what makes it the thing to compare across batches.
+        if alone_inter.box_min == alone_bungee.box_min && alone_inter.box_max == alone_bungee.box_max
+        {
+            continue;
+        }
+
+        inter.gpu_glyph(&mut shared, gid, &[]).expect("Inter into the shared batch");
+        let mixed = bungee.gpu_glyph(&mut shared, gid, &[]).expect("BungeeTint into the shared batch");
+
+        assert_eq!(
+            (mixed.box_min, mixed.box_max),
+            (alone_bungee.box_min, alone_bungee.box_max),
+            "gid {gid}: the shared batch returned the wrong font's outline",
+        );
+        compared += 1;
+    }
+    assert!(compared > 200, "only {compared} ids were distinguishable; the test proved little");
+}

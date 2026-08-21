@@ -9,8 +9,10 @@ unsafe extern "C" {
 }
 
 pub const PIXEL_FORMAT_RGBA8_UNORM: u64 = 70;
+pub const PIXEL_FORMAT_BGRA8_UNORM: u64 = 80;
 pub const TEXTURE_USAGE_RENDER_TARGET: u64 = 4;
 pub const STORAGE_MODE_SHARED: u64 = 0;
+pub const LOAD_ACTION_LOAD: u64 = 1;
 pub const LOAD_ACTION_CLEAR: u64 = 2;
 pub const STORE_ACTION_STORE: u64 = 1;
 pub const PRIMITIVE_TRIANGLE_STRIP: u64 = 4;
@@ -151,12 +153,17 @@ pub unsafe fn new_buffer<T>(device: Id, data: &[T]) -> Option<Owned> {
     }
 }
 
-pub unsafe fn new_render_target(device: Id, width: u32, height: u32) -> Option<Owned> {
+pub unsafe fn new_render_target(
+    device: Id,
+    width: u32,
+    height: u32,
+    pixel_format: u64,
+) -> Option<Owned> {
     let desc: Id = unsafe {
         send4(
             class(c"MTLTextureDescriptor"),
             sel(c"texture2DDescriptorWithPixelFormat:width:height:mipmapped:"),
-            PIXEL_FORMAT_RGBA8_UNORM,
+            pixel_format,
             u64::from(width),
             u64::from(height),
             NO,
@@ -177,6 +184,7 @@ pub unsafe fn new_pipeline(
     vertex_fn: Id,
     fragment_fn: Id,
     dual_source: bool,
+    pixel_format: u64,
 ) -> Result<Owned, String> {
     let desc: Id = unsafe { send0(class(c"MTLRenderPipelineDescriptor"), sel(c"new")) };
     let Some(desc) = (unsafe { Owned::new(desc) }) else {
@@ -190,7 +198,7 @@ pub unsafe fn new_pipeline(
     let attachments: Id = unsafe { send0(desc.id(), sel(c"colorAttachments")) };
     let attachment: Id = unsafe { send1(attachments, sel(c"objectAtIndexedSubscript:"), 0u64) };
     unsafe {
-        send1::<u64, ()>(attachment, sel(c"setPixelFormat:"), PIXEL_FORMAT_RGBA8_UNORM);
+        send1::<u64, ()>(attachment, sel(c"setPixelFormat:"), pixel_format);
         if dual_source {
             send1::<Bool, ()>(attachment, sel(c"setBlendingEnabled:"), 1);
             for (setter, factor) in [
@@ -219,20 +227,23 @@ pub unsafe fn new_pipeline(
     }
 }
 
-pub unsafe fn render_pass(texture: Id) -> Id {
+// `clear` of `None` loads what the target already holds, which is what lets a second geometry draw
+// over the first instead of erasing it.
+pub unsafe fn render_pass(texture: Id, clear: Option<ClearColor>) -> Id {
     let pass: Id =
         unsafe { send0(class(c"MTLRenderPassDescriptor"), sel(c"renderPassDescriptor")) };
     let attachments: Id = unsafe { send0(pass, sel(c"colorAttachments")) };
     let attachment: Id = unsafe { send1(attachments, sel(c"objectAtIndexedSubscript:"), 0u64) };
     unsafe {
         send1::<Id, ()>(attachment, sel(c"setTexture:"), texture);
-        send1::<u64, ()>(attachment, sel(c"setLoadAction:"), LOAD_ACTION_CLEAR);
         send1::<u64, ()>(attachment, sel(c"setStoreAction:"), STORE_ACTION_STORE);
-        send1::<ClearColor, ()>(
-            attachment,
-            sel(c"setClearColor:"),
-            ClearColor { red: 0.0, green: 0.0, blue: 0.0, alpha: 0.0 },
-        );
+        match clear {
+            Some(color) => {
+                send1::<u64, ()>(attachment, sel(c"setLoadAction:"), LOAD_ACTION_CLEAR);
+                send1::<ClearColor, ()>(attachment, sel(c"setClearColor:"), color);
+            }
+            None => send1::<u64, ()>(attachment, sel(c"setLoadAction:"), LOAD_ACTION_LOAD),
+        }
     }
     pass
 }
@@ -340,4 +351,18 @@ pub unsafe fn blit_texture_to_buffer(encoder: Id, texture: Id, buffer: Id, width
 
 pub unsafe fn send_void(obj: Id, selector: Sel) {
     unsafe { send0::<()>(obj, selector) }
+}
+
+pub unsafe fn drawable_texture(drawable: Id) -> Id {
+    unsafe { send0(drawable, sel(c"texture")) }
+}
+
+// Presentation rides the command buffer that already carries the draw, so the two are ordered by
+// the queue rather than by the caller waiting on anything.
+pub unsafe fn present_drawable(commands: Id, drawable: Id) {
+    unsafe { send1::<Id, ()>(commands, sel(c"presentDrawable:"), drawable) }
+}
+
+pub unsafe fn texture_pixel_format(texture: Id) -> u64 {
+    unsafe { send0(texture, sel(c"pixelFormat")) }
 }

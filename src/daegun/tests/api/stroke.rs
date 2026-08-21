@@ -30,7 +30,7 @@ fn stroking_outlines_the_glyph_instead_of_filling_it() {
     let outline = f
         .rasterize_glyph_with(gid, 64.0, &[], &RasterOptions::default().with_stroke(thin))
         .expect("O strokes");
-    assert!(mid(&outline) < 128, "the centre of a thin outlined O should be paper, got {}", mid(&outline));
+    assert!(mid(&outline) < 128, "the center of a thin outlined O should be paper, got {}", mid(&outline));
 }
 
 #[test]

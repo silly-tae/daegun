@@ -103,7 +103,7 @@ pub struct SubpixelParams {
 // Written out rather than derived, because the same numbers are encoded again in the three shaders
 // and in three compiled .spv files, and a shader cannot follow a Rust constant. Deriving would
 // propagate a change to here and stop, leaving the GPU indexing one size against another – which
-// shows up as colour fringing, not as an error. The relationship is asserted below instead.
+// shows up as color fringing, not as an error. The relationship is asserted below instead.
 pub const MAX_SUBPIXEL_WEIGHTS: usize = 64;
 
 const _: () = assert!(
@@ -333,8 +333,12 @@ impl BuiltGlyph {
     }
 }
 
+// `font` keeps two faces apart: a glyph id and an axis position say nothing about which font they
+// came from, so a shared batch would hand back the wrong outline.
+#[non_exhaustive]
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct GpuGlyphKey {
+    pub font: usize,
     pub gid: u16,
     pub axes: crate::daecore::sync::Shared<crate::daecore::cache::AxisKey>,
     pub shape: u32,

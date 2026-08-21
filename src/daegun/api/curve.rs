@@ -5,6 +5,7 @@ impl Font {
         -> Result<GlyphSlot, GpuGlyphError>
     {
         let key = crate::daerizer::daegpu::GpuGlyphKey {
+            font: self.id,
             gid,
             axes: self.cache.intern_axes(&crate::cache::canonical_axes(axes)),
             shape: 0,
@@ -67,21 +68,30 @@ impl Font {
         axes: &[(&str, f64)],
         palette_index: u16,
     ) -> Result<alloc::vec::Vec<ColorSlot>, GpuGlyphError> {
-        let paint = self.colr_v1_paint(gid, axes, palette_index).ok_or(GpuGlyphError::NoOutline)?;
+        self.gpu_color_glyph_with(batch, gid, axes, palette_index, super::color::FOREGROUND)
+    }
+
+    pub fn gpu_color_glyph_with(
+        &self,
+        batch: &mut crate::daerizer::daegpu::GpuBatch,
+        gid: u16,
+        axes: &[(&str, f64)],
+        palette_index: u16,
+        foreground: crate::daerizer::Rgba,
+    ) -> Result<alloc::vec::Vec<ColorSlot>, GpuGlyphError> {
         let mut scene = crate::daerizer::DisplayList::default();
         let axes_shared = self.cache.intern_axes(&crate::cache::canonical_axes(axes));
-        let mut outline = |g: u16| {
-            let mut p = crate::daecore::daetype::outline::Path::default();
-            self.outline_glyph_keyed(g, &axes_shared, &mut p)?;
-            (!p.is_empty()).then_some(p)
+        let drew = {
+            let mut outline = |g: u16| {
+                let mut p = crate::daecore::daetype::outline::Path::default();
+                self.outline_glyph_keyed(g, &axes_shared, &mut p)?;
+                (!p.is_empty()).then_some(p)
+            };
+            self.colr_display_list(gid, axes, palette_index, foreground, &mut outline, &mut scene)
         };
-        crate::daerizer::lower(
-            &paint,
-            crate::daerizer::IDENTITY,
-            &mut outline,
-            crate::daerizer::Rgba::default(),
-            &mut scene,
-        );
+        if !drew {
+            return Err(GpuGlyphError::NoOutline);
+        }
 
         let mut out = alloc::vec::Vec::new();
         for (i, op) in scene.ops().iter().enumerate() {
@@ -94,6 +104,7 @@ impl Font {
             let p = scene.path(*path).ok_or(GpuGlyphError::NoOutline)?;
 
             let key = crate::daerizer::daegpu::GpuGlyphKey {
+                font: self.id,
                 gid,
                 axes: crate::sync::Shared::clone(&axes_shared),
                 shape: u32::try_from(i).map_err(|_| GpuGlyphError::BatchFull)?,

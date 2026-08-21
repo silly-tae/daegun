@@ -4,6 +4,15 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if defined(__APPLE__)
+#include <objc/message.h>
+#include <objc/runtime.h>
+
+/* Metal.framework's own C entry point, so adopting a device needs no Objective-C of our own. It
+   comes back retained, hence the release once daegun has taken its own reference. */
+extern void *MTLCreateSystemDefaultDevice(void);
+#endif
+
 static int failures = 0;
 
 #define CHECK(cond, ...)                                                                           \
@@ -53,7 +62,7 @@ static void abi_version_agrees(void)
           (DAEGUN_ABI_VERSION >> 8) & 0xffu, DAEGUN_ABI_VERSION & 0xffu);
 }
 
-/* Rule 2: NULL is an answer, never a crash. This is the test that a sanitiser cannot write for us —
+/* Rule 2: NULL is an answer, never a crash. This is the test that a sanitizer cannot write for us –
  * it has to be attempted deliberately, because no correct program does it. */
 static void null_is_refused_not_dereferenced(void)
 {
@@ -494,7 +503,7 @@ static void layout_wraps_and_borrows(const char *path)
               "layout info failed");
         CHECK(lines > 1, "a 43-character string at 6000 units wrapped to %zu line(s)", lines);
         /* NOT `inline_size <= max`: a single unbreakable run may exceed the measure, which is
-         * documented behaviour rather than a defect. The property worth asserting is that a wider
+         * documented behavior rather than a defect. The property worth asserting is that a wider
          * measure yields fewer lines. */
         CHECK(inline_size > 0.0, "the layout reports no width at all");
 
@@ -521,8 +530,8 @@ static void layout_wraps_and_borrows(const char *path)
         size_t g = 0;
         daegun_run_glyphs(borrowed, &g);
         CHECK(g > 0, "the first run of the first line holds no glyphs");
-        /* Deliberately NOT daegun_run_free(borrowed) — it belongs to the layout, and freeing it
-         * would be the double free the sanitiser exists to catch. */
+        /* Deliberately NOT daegun_run_free(borrowed) – it belongs to the layout, and freeing it
+         * would be the double free the sanitizer exists to catch. */
 
         CHECK(daegun_layout_line(layout, lines, &runs, NULL, NULL, NULL, NULL, NULL, NULL, NULL)
                   == DAEGUN_RANGE, "a line past the end was not DAEGUN_RANGE");
@@ -670,7 +679,7 @@ static void drawing_picks_a_route(const char *path)
                 daegun_metrics m;
                 CHECK(daegun_bitmap_metrics(bmp, &m) == DAEGUN_OK, "borrowed metrics failed");
                 CHECK(m.width > 0, "the drawn bitmap is empty");
-                /* Deliberately NOT daegun_bitmap_free(bmp) — it belongs to the draw result. */
+                /* Deliberately NOT daegun_bitmap_free(bmp) – it belongs to the draw result. */
             }
             daegun_drawn_free(drawn);
         }
@@ -1205,7 +1214,7 @@ static void routing_decides_without_drawing(void)
     CHECK(daegun_route(DAEGUN_GPU_BATCH_FULL, &req, gpu, &pol, &routed) == DAEGUN_OK, "route failed");
     CHECK(routed == DAEGUN_ROUTED_FLUSH_AND_RETRY, "a full batch routed to %d", routed);
     CHECK(daegun_route(DAEGUN_GPU_NOT_FLAT_COLOR, &req, gpu, &pol, &routed) == DAEGUN_OK, "route failed");
-    CHECK(routed == DAEGUN_ROUTED_SCENE, "a colour glyph routed to %d", routed);
+    CHECK(routed == DAEGUN_ROUTED_SCENE, "a color glyph routed to %d", routed);
 
     daegun_policy cpu_only = pol;
     cpu_only.prefer = DAEGUN_PREFER_CPU;
@@ -1379,11 +1388,122 @@ GPU_BACKEND_TEST(d3d11)
 GPU_BACKEND_TEST(d3d12)
 #endif
 
+#if defined(__APPLE__)
+static void metal_adopts_a_device_and_refuses_bad_surfaces(const char *path)
+{
+    void *device = MTLCreateSystemDefaultDevice();
+    if (!device) {
+        return;
+    }
+
+    daegun_metal_renderer *adopted = NULL;
+    daegun_status st = daegun_metal_renderer_from_device(device, &adopted);
+    CHECK(st == DAEGUN_OK, "metal renderer_from_device returned %d: %s", st,
+          daegun_last_error().data);
+
+    if (st == DAEGUN_OK) {
+        daegun_metal_renderer *own = NULL;
+        if (daegun_metal_renderer_new(&own) == DAEGUN_OK) {
+            daegun_text *a = NULL;
+            daegun_text *b = NULL;
+            daegun_metal_renderer_device_name(adopted, &a);
+            daegun_metal_renderer_device_name(own, &b);
+            daegun_str av = { NULL, 0 };
+            daegun_str bv = { NULL, 0 };
+            daegun_text_str(a, &av);
+            daegun_text_str(b, &bv);
+            CHECK(av.len > 0 && av.len == bv.len && memcmp(av.data, bv.data, av.len) == 0,
+                  "adopted \"%s\" but the default device is \"%s\"",
+                  av.data ? av.data : "?", bv.data ? bv.data : "?");
+            daegun_text_free(a);
+            daegun_text_free(b);
+            daegun_metal_renderer_free(own);
+        }
+
+        daegun_font *font = open_font(path);
+        daegun_batch *batch = NULL;
+        if (font && daegun_batch_new(&batch) == DAEGUN_OK) {
+            uint16_t gid = 0;
+            daegun_glyph_slot slot;
+            memset(&slot, 0, sizeof slot);
+            daegun_font_glyph_id(font, 'B', &gid);
+            CHECK(daegun_font_gpu_glyph(font, batch, gid, NULL, 0, &slot) == DAEGUN_OK,
+                  "gpu_glyph failed for the adopted device");
+
+            daegun_metal_geometry *geom = NULL;
+            CHECK(daegun_metal_geometry_new(adopted, batch, &geom) == DAEGUN_OK,
+                  "geometry_new on an adopted device failed: %s", daegun_last_error().data);
+
+            /* Both byte orders, since a caller's surface picks the format rather than daegun. */
+            const int32_t formats[2] = { DAEGUN_SURFACE_RGBA8, DAEGUN_SURFACE_BGRA8 };
+            for (int f = 0; f < 2 && geom; f++) {
+                daegun_metal_target *target = NULL;
+                st = daegun_metal_target_with_format(adopted, 64, 64, formats[f], &target);
+                CHECK(st == DAEGUN_OK, "target_with_format(%d) returned %d: %s", formats[f], st,
+                      daegun_last_error().data);
+                if (st != DAEGUN_OK) {
+                    continue;
+                }
+
+                daegun_subpixel_params sp;
+                daegun_subpixel_params_from_layout(DAEGUN_LAYOUT_GRAYSCALE, &sp);
+                const float off[2] = { 8.0f, 8.0f };
+                const float em[2] = { 48.0f, 48.0f };
+                const float white[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+                daegun_glyph_instance inst;
+                memset(&inst, 0, sizeof inst);
+                daegun_glyph_slot_instance(&slot, off, 48.0f, em, white, &inst);
+
+                st = daegun_metal_draw(adopted, target, geom, &inst, 1, &sp,
+                                       DAEGUN_MODE_GRAYSCALE);
+                CHECK(st == DAEGUN_OK, "the adopted device refused to draw: %d", st);
+                CHECK(daegun_metal_wait(adopted, target) == DAEGUN_OK, "wait failed");
+
+                size_t n = 0;
+                const uint8_t *px = daegun_metal_read_pixels(adopted, target, &n);
+                CHECK(px != NULL, "read_pixels on an adopted device gave nothing");
+                size_t ink = 0;
+                for (size_t i = 3; px && i < n; i += 4) {
+                    if (px[i] != 0) {
+                        ink++;
+                    }
+                }
+                CHECK(ink > 0, "format %d drew nothing on the adopted device", formats[f]);
+                daegun_metal_target_free(target);
+            }
+            daegun_metal_geometry_free(geom);
+        }
+        daegun_batch_free(batch);
+        daegun_font_free(font);
+    }
+
+    daegun_metal_target *bad = NULL;
+    CHECK(daegun_metal_target_from_texture(adopted, NULL, 64, 64, &bad) != DAEGUN_OK,
+          "a NULL texture was accepted as a surface");
+    CHECK(bad == NULL, "a refused borrow still wrote an out-parameter");
+    CHECK(daegun_metal_target_from_drawable(adopted, NULL, 64, 64, &bad) != DAEGUN_OK,
+          "a NULL drawable was accepted as a surface");
+    CHECK(daegun_metal_target_from_texture(NULL, NULL, 64, 64, &bad) == DAEGUN_NULL,
+          "a NULL renderer was not reported as such");
+
+    daegun_metal_renderer *nope = NULL;
+    CHECK(daegun_metal_renderer_from_device(NULL, &nope) != DAEGUN_OK,
+          "a NULL device was adopted");
+    CHECK(daegun_metal_renderer_from_device(device, NULL) == DAEGUN_NULL,
+          "a NULL out-parameter was accepted");
+
+    daegun_metal_renderer_free(adopted);
+    ((void (*)(void *, SEL))objc_msgSend)(device, sel_registerName("release"));
+    printf("  metal: adopted the caller's device, both byte orders drew\n");
+}
+#endif
+
 static void the_gpu_backends_draw(const char *path)
 {
     int ran = 0;
 #if defined(__APPLE__)
     ran += metal_draws_a_glyph(path);
+    metal_adopts_a_device_and_refuses_bad_surfaces(path);
 #endif
     ran += vulkan_draws_a_glyph(path);
 #if defined(_WIN32)
@@ -1432,7 +1552,7 @@ static void the_atlas_packer_packs(void)
     CHECK(daegun_shelf_packer_insert(p, 16, 16, &a) == DAEGUN_OK, "the first insert failed");
     CHECK(a.w == 16 && a.h == 16, "a 16x16 request came back %zux%zu", a.w, a.h);
     CHECK(daegun_shelf_packer_insert(p, 16, 16, &b) == DAEGUN_OK, "the second insert failed");
-    /* Two rectangles in one atlas must not overlap — the one thing a packer is for. */
+    /* Two rectangles in one atlas must not overlap – the one thing a packer is for. */
     int disjoint = a.x + a.w <= b.x || b.x + b.w <= a.x || a.y + a.h <= b.y || b.y + b.h <= a.y;
     CHECK(disjoint, "the packer overlapped (%zu,%zu %zux%zu) with (%zu,%zu %zux%zu)",
           a.x, a.y, a.w, a.h, b.x, b.y, b.w, b.h);
@@ -1531,9 +1651,9 @@ static void scripts_answer_about_themselves(void)
 
     int32_t ctx = -1;
     CHECK(daegun_script_is_context_dependent(latin, &ctx) == DAEGUN_OK, "failed");
-    CHECK(!ctx, "latin takes its identity from its neighbours");
+    CHECK(!ctx, "latin takes its identity from its neighbors");
     CHECK(daegun_script_is_context_dependent(arabic, &ctx) == DAEGUN_OK, "failed");
-    CHECK(!ctx, "arabic takes its identity from its neighbours");
+    CHECK(!ctx, "arabic takes its identity from its neighbors");
 
     runs = NULL;
     CHECK(daegun_text_script_runs(",", &runs) == DAEGUN_OK, "script_runs failed for a comma");
@@ -1816,11 +1936,11 @@ static void the_gpu_buffers_are_readable(const char *path)
     if (daegun_font_gpu_color_glyph(font, batch, gid, NULL, 0, 0, &slots) == DAEGUN_OK) {
         size_t ns = 0;
         const daegun_color_slot *cs = daegun_color_slots_data(slots, &ns);
-        CHECK(cs != NULL || ns == 0, "the colour slot list is null with %zu entries", ns);
+        CHECK(cs != NULL || ns == 0, "the color slot list is null with %zu entries", ns);
         for (size_t i = 0; i < ns; i++) {
             CHECK(cs[i].tint[3] >= 0.0f && cs[i].tint[3] <= 1.0f,
-                  "colour slot %zu has alpha %g", i, (double)cs[i].tint[3]);
-            CHECK(cs[i].slot.h_bands > 0, "colour slot %zu claims no bands", i);
+                  "color slot %zu has alpha %g", i, (double)cs[i].tint[3]);
+            CHECK(cs[i].slot.h_bands > 0, "color slot %zu claims no bands", i);
         }
         daegun_color_slots_free(slots);
     }

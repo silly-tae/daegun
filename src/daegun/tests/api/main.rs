@@ -35,3 +35,5 @@ mod scene_orientation;
 mod rasterizer_agreement;
 mod overlapping_contours;
 mod linebreak_stretch;
+
+mod colr_v0;

@@ -140,12 +140,12 @@ pub fn subset_cff_flavored(
         "head", "OS/2", "gasp", "DSIG", "meta", "PCLT", "VDMX", "MERG", "hsty", "cvt ", "fpgm", "prep",
     ];
 
-    let recognised = |t: &str| {
+    let recognized = |t: &str| {
         RENUMBER_SAFE.contains(&t)
             || STRIP_FOR_CFF_SUBSET.contains(&t)
             || (t == "BASE" && source.get("BASE").is_some_and(|b| crate::daecore::daetype::base::base_is_glyph_free(b)))
     };
-    let want_compact = display.is_some() && source.keys().all(|t| recognised(t));
+    let want_compact = display.is_some() && source.keys().all(|t| recognized(t));
     let cff_result = if want_compact {
         crate::daecore::daetype::subsetter::subset_cff_compacting(cff, &closed)?
     } else {

@@ -93,7 +93,7 @@ fn the_whole_routing_table_holds_its_invariants() {
                 continue;
             }
             Err(GpuGlyphError::NotFlatColor) => {
-                assert_eq!(got, Rendered::Scene, "a colour scene was not routed as one: {what}");
+                assert_eq!(got, Rendered::Scene, "a color scene was not routed as one: {what}");
                 seen_scene += 1;
                 continue;
             }

@@ -11,7 +11,7 @@ fn checksum32(data: &[u8]) -> u32 {
     let rem = chunks.remainder();
     let mut sum = chunks.fold(0u32, |acc, c| {
         // The operand form is what lets LLVM vectorise this, not the chunking. Written as a shift-or
-        // chain the four loads are never recognised as one byte-swapped 32-bit load and the fold
+        // chain the four loads are never recognized as one byte-swapped 32-bit load and the fold
         // stays scalar: measured on an 8.4 MB font, 569.5us against 116.7us.
         acc.wrapping_add(u32::from_be_bytes([c[0], c[1], c[2], c[3]]))
     });

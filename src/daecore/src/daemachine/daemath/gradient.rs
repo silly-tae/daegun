@@ -17,13 +17,15 @@ impl Ramp {
             Stops::Many(s) => s,
         };
         let Some(inverse) = invert(to_device) else { return Ramp::Flat(None) };
+        // COLR calls a degenerate linear ill-formed and has a radial with identical circles paint
+        // nothing; a sweep with coincident angles draws nothing under reflect and repeat.
         let degenerate = match g.kind {
             GradientKind::Linear { x0, y0, x1, y1 } => x0 == x1 && y0 == y1,
             GradientKind::Radial { x0, y0, r0, x1, y1, r1 } => x0 == x1 && y0 == y1 && r0 == r1,
-            GradientKind::Sweep { .. } => false,
+            GradientKind::Sweep { start_angle, end_angle, .. } => start_angle == end_angle,
         };
         if degenerate {
-            return Ramp::Flat(stops.last().map(|s| s.color));
+            return Ramp::Flat(None);
         }
         Ramp::Varying { kind: g.kind, stops, extend: g.extend, inverse }
     }
@@ -83,9 +85,6 @@ fn radial_t(px: f64, py: f64, x0: f64, y0: f64, r0: f64, x1: f64, y1: f64, r1: f
 
 fn sweep_t(px: f64, py: f64, cx: f64, cy: f64, start: f64, end: f64) -> Option<f64> {
     let span = end - start;
-    if span == 0.0 {
-        return None;
-    }
     let deg = crate::daecore::daemachine::float::atan2(py - cy, px - cx) * 180.0 / core::f64::consts::PI;
     let deg = deg - 360.0 * (deg / 360.0).floor();
     Some((deg - start) / span)

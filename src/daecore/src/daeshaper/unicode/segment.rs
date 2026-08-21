@@ -86,7 +86,7 @@ fn grapheme_break_between(chars: &[char], i: usize) -> bool {
     if matches!(before, gcb::LV | gcb::V) && matches!(after, gcb::V | gcb::T) { return false; }
     if matches!(before, gcb::LVT | gcb::T) && after == gcb::T { return false; }
 
-    // GB9, GB9a, GB9b: marks and Prepend attach to their neighbour.
+    // GB9, GB9a, GB9b: marks and Prepend attach to their neighbor.
     if matches!(after, gcb::EXTEND | gcb::ZWJ) { return false; }
     if after == gcb::SPACING_MARK { return false; }
     if before == gcb::PREPEND { return false; }

@@ -288,7 +288,8 @@ macro_rules! backend {
         $renderer:ident, $target:ident, $geometry:ident,
         $target_ty:ty, $geom_ty:ty,
         $new:ident, $free:ident, $name:ident, $profile:ident, $subpixel:ident, $ortho:ident,
-        $mk_target:ident, $t_width:ident, $t_height:ident, $t_pixels:ident, $t_pixel:ident,
+        $mk_target:ident, $t_with_format:ident, $t_set_clear:ident,
+        $t_width:ident, $t_height:ident, $t_pixels:ident, $t_pixel:ident,
         $t_free:ident,
         $mk_geom:ident, $g_revision:ident, $g_free:ident,
         $draw:ident, $draw_with:ident, $wait:ident, $read:ident,
@@ -298,7 +299,7 @@ macro_rules! backend {
         use super::*;
         use $backend as backend_mod;
 
-        fn err_status(e: &backend_mod::Error) -> Status {
+        pub(crate) fn err_status(e: &backend_mod::Error) -> Status {
             use crate::paint::daegpu::backend::Backend;
             let refusal = <backend_mod::Renderer as Backend>::refusal(e);
             fail(alloc::format!("{e}"), backend_refusal(refusal))
@@ -308,7 +309,7 @@ macro_rules! backend {
 
         pub struct $target {
             pub(crate) inner: $target_ty,
-            _renderer: Arc<backend_mod::Renderer>,
+            pub(crate) _renderer: Arc<backend_mod::Renderer>,
         }
 
         pub struct $geometry {
@@ -387,6 +388,39 @@ macro_rules! backend {
                 }
                 Err(e) => err_status(&e),
             }
+        }
+
+        // An offscreen target in the caller's byte order. `format` is a `DAEGUN_SURFACE_*` value.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $t_with_format(
+            renderer: *const $renderer,
+            width: u32,
+            height: u32,
+            format: i32,
+            out: *mut *mut $target,
+        ) -> Status {
+            let Some(r) = (unsafe { gpu_ref(renderer) }) else { return Status::Null };
+            let format = match format {
+                0 => crate::paint::daegpu::backend::SurfaceFormat::Rgba8Unorm,
+                1 => crate::paint::daegpu::backend::SurfaceFormat::Bgra8Unorm,
+                _ => return Status::Range,
+            };
+            match r.0.target_with_format(width, height, format) {
+                Ok(t) => {
+                    let inner = $detach_t(t);
+                    unsafe { deliver(out, $target { inner, _renderer: Arc::clone(&r.0) }) }
+                }
+                Err(e) => err_status(&e),
+            }
+        }
+
+        // What the target clears to before each draw, four bytes RGBA. NULL keeps what it already
+        // holds, which is how a second geometry draws over the first rather than erasing it.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $t_set_clear(target: *mut $target, clear: *const u8) -> Status {
+            let Some(t) = (unsafe { gpu_mut(target) }) else { return Status::Null };
+            t.inner.set_clear(unsafe { crate::ffi::rgba_of(clear) });
+            Status::Ok
         }
 
         #[unsafe(no_mangle)]
@@ -577,12 +611,131 @@ backend!(
     crate::paint::daegpu::ffi::Target, crate::paint::daegpu::ffi::Geometry,
     daegun_metal_renderer_new, daegun_metal_renderer_free, daegun_metal_renderer_device_name,
     daegun_metal_renderer_profile, daegun_metal_renderer_supports_subpixel, daegun_metal_ortho,
-    daegun_metal_target_new, daegun_metal_target_width, daegun_metal_target_height,
+    daegun_metal_target_new, daegun_metal_target_with_format, daegun_metal_target_set_clear,
+    daegun_metal_target_width, daegun_metal_target_height,
     daegun_metal_target_pixels, daegun_metal_target_pixel, daegun_metal_target_free,
     daegun_metal_geometry_new, daegun_metal_geometry_revision, daegun_metal_geometry_free,
     daegun_metal_draw, daegun_metal_draw_with, daegun_metal_wait, daegun_metal_read_pixels,
     core::convert::identity, core::convert::identity
 );
+
+// Metal's half of the borrowed-surface work. It stays hand-written rather than joining
+// `d3d_surface!`: adoption takes one handle where D3D takes two, and a drawable is a second kind of
+// borrow that no other backend has.
+
+#[cfg(target_vendor = "apple")]
+#[allow(clippy::arc_with_non_send_sync, reason = "one thread per renderer, by the header's rule 5")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn daegun_metal_renderer_from_device(
+    device: *mut core::ffi::c_void,
+    out: *mut *mut metal::MetalRenderer,
+) -> Status {
+    match unsafe { crate::paint::daegpu::ffi::Renderer::from_device(device) } {
+        Ok(r) => unsafe { deliver(out, metal::MetalRenderer(Arc::new(r))) },
+        Err(e) => metal::err_status(&e),
+    }
+}
+
+// No format argument, unlike the other three: an MTLTexture carries its own pixel format, so daegun
+// reads it rather than letting the caller name one the texture disagrees with.
+#[cfg(target_vendor = "apple")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn daegun_metal_target_from_texture(
+    renderer: *const metal::MetalRenderer,
+    texture: *mut core::ffi::c_void,
+    width: u32,
+    height: u32,
+    out: *mut *mut metal::MetalTarget,
+) -> Status {
+    let Some(r) = (unsafe { gpu_ref(renderer) }) else { return Status::Null };
+    match unsafe { r.0.target_from_texture(texture, width, height) } {
+        Ok(t) => unsafe {
+            deliver(out, metal::MetalTarget { inner: t, _renderer: Arc::clone(&r.0) })
+        },
+        Err(e) => metal::err_status(&e),
+    }
+}
+
+// daegun presents the drawable on the command buffer carrying the draw, so the caller must not
+// present it as well.
+#[cfg(target_vendor = "apple")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn daegun_metal_target_from_drawable(
+    renderer: *const metal::MetalRenderer,
+    drawable: *mut core::ffi::c_void,
+    width: u32,
+    height: u32,
+    out: *mut *mut metal::MetalTarget,
+) -> Status {
+    let Some(r) = (unsafe { gpu_ref(renderer) }) else { return Status::Null };
+    match unsafe { r.0.target_from_drawable(drawable, width, height) } {
+        Ok(t) => unsafe {
+            deliver(out, metal::MetalTarget { inner: t, _renderer: Arc::clone(&r.0) })
+        },
+        Err(e) => metal::err_status(&e),
+    }
+}
+
+// Vulkan's half of the borrowed-surface work. It stays out of `backend!` because the image comes
+// in as a bare uint64 handle rather than a pointer, which no other backend does.
+
+fn vk_format_of(format: i32) -> Option<crate::paint::daegpu::vk::Format> {
+    match format {
+        0 => Some(crate::paint::daegpu::vk::Format::Rgba8Unorm),
+        1 => Some(crate::paint::daegpu::vk::Format::Bgra8Unorm),
+        _ => None,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn daegun_vulkan_target_from_image(
+    renderer: *const vulkan::VulkanRenderer,
+    image: u64,
+    width: u32,
+    height: u32,
+    format: i32,
+    out: *mut *mut vulkan::VulkanTarget,
+) -> Status {
+    let Some(r) = (unsafe { gpu_ref(renderer) }) else { return Status::Null };
+    let Some(format) = vk_format_of(format) else { return Status::Range };
+    match unsafe { r.0.target_from_image(image, width, height, format) } {
+        Ok(t) => {
+            let inner = unsafe {
+                core::mem::transmute::<
+                    crate::paint::daegpu::vk::Target<'_>,
+                    crate::paint::daegpu::vk::Target<'static>,
+                >(t)
+            };
+            unsafe { deliver(out, vulkan::VulkanTarget { inner, _renderer: Arc::clone(&r.0) }) }
+        }
+        Err(e) => vulkan::err_status(&e),
+    }
+}
+
+#[allow(clippy::arc_with_non_send_sync, reason = "one thread per renderer, by the header's rule 5")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn daegun_vulkan_renderer_from_device(
+    instance: *mut core::ffi::c_void,
+    physical: *mut core::ffi::c_void,
+    device: *mut core::ffi::c_void,
+    queue_family: u32,
+    dual_src_blend: i32,
+    out: *mut *mut vulkan::VulkanRenderer,
+) -> Status {
+    let built = unsafe {
+        crate::paint::daegpu::vk::Renderer::from_device(
+            instance.cast(),
+            physical.cast(),
+            device.cast(),
+            queue_family,
+            dual_src_blend != 0,
+        )
+    };
+    match built {
+        Ok(r) => unsafe { deliver(out, vulkan::VulkanRenderer(Arc::new(r))) },
+        Err(e) => vulkan::err_status(&e),
+    }
+}
 
 backend!(
     crate::paint::daegpu::vk, vulkan,
@@ -590,7 +743,8 @@ backend!(
     crate::paint::daegpu::vk::Target<'static>, crate::paint::daegpu::vk::Geometry<'static>,
     daegun_vulkan_renderer_new, daegun_vulkan_renderer_free, daegun_vulkan_renderer_device_name,
     daegun_vulkan_renderer_profile, daegun_vulkan_renderer_supports_subpixel, daegun_vulkan_ortho,
-    daegun_vulkan_target_new, daegun_vulkan_target_width, daegun_vulkan_target_height,
+    daegun_vulkan_target_new, daegun_vulkan_target_with_format, daegun_vulkan_target_set_clear,
+    daegun_vulkan_target_width, daegun_vulkan_target_height,
     daegun_vulkan_target_pixels, daegun_vulkan_target_pixel, daegun_vulkan_target_free,
     daegun_vulkan_geometry_new, daegun_vulkan_geometry_revision, daegun_vulkan_geometry_free,
     daegun_vulkan_draw, daegun_vulkan_draw_with, daegun_vulkan_wait, daegun_vulkan_read_pixels,
@@ -609,7 +763,8 @@ backend!(
     crate::paint::daegpu::d3d11::Target, crate::paint::daegpu::d3d11::Geometry,
     daegun_d3d11_renderer_new, daegun_d3d11_renderer_free, daegun_d3d11_renderer_device_name,
     daegun_d3d11_renderer_profile, daegun_d3d11_renderer_supports_subpixel, daegun_d3d11_ortho,
-    daegun_d3d11_target_new, daegun_d3d11_target_width, daegun_d3d11_target_height,
+    daegun_d3d11_target_new, daegun_d3d11_target_with_format, daegun_d3d11_target_set_clear,
+    daegun_d3d11_target_width, daegun_d3d11_target_height,
     daegun_d3d11_target_pixels, daegun_d3d11_target_pixel, daegun_d3d11_target_free,
     daegun_d3d11_geometry_new, daegun_d3d11_geometry_revision, daegun_d3d11_geometry_free,
     daegun_d3d11_draw, daegun_d3d11_draw_with, daegun_d3d11_wait, daegun_d3d11_read_pixels,
@@ -623,7 +778,8 @@ backend!(
     crate::paint::daegpu::d3d12::Target, crate::paint::daegpu::d3d12::Geometry,
     daegun_d3d12_renderer_new, daegun_d3d12_renderer_free, daegun_d3d12_renderer_device_name,
     daegun_d3d12_renderer_profile, daegun_d3d12_renderer_supports_subpixel, daegun_d3d12_ortho,
-    daegun_d3d12_target_new, daegun_d3d12_target_width, daegun_d3d12_target_height,
+    daegun_d3d12_target_new, daegun_d3d12_target_with_format, daegun_d3d12_target_set_clear,
+    daegun_d3d12_target_width, daegun_d3d12_target_height,
     daegun_d3d12_target_pixels, daegun_d3d12_target_pixel, daegun_d3d12_target_free,
     daegun_d3d12_geometry_new, daegun_d3d12_geometry_revision, daegun_d3d12_geometry_free,
     daegun_d3d12_draw, daegun_d3d12_draw_with, daegun_d3d12_wait, daegun_d3d12_read_pixels,
@@ -676,6 +832,69 @@ macro_rules! d3d_extras {
         }
     };
 }
+
+#[cfg(windows)]
+macro_rules! d3d_surface {
+    ($modname:ident, $renderer:ident, $target:ident, $from_device:ident, $from_texture:ident,
+     $second:ident) => {
+        // Adopts a device the caller already made, which is what lets daegun draw into that
+        // device's swapchain: a backbuffer belongs to the device its swapchain was created on.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $from_device(
+            device: *mut core::ffi::c_void,
+            second: *mut core::ffi::c_void,
+            out: *mut *mut $modname::$renderer,
+        ) -> Status {
+            let built = unsafe {
+                crate::paint::daegpu::$modname::Renderer::from_device(device, second)
+            };
+            match built {
+                Ok(r) => unsafe { deliver(out, $modname::$renderer(Arc::new(r))) },
+                Err(e) => $modname::err_status(&e),
+            }
+        }
+
+        // A target over a texture daegun did not create, such as a swapchain backbuffer.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $from_texture(
+            renderer: *const $modname::$renderer,
+            texture: *mut core::ffi::c_void,
+            width: u32,
+            height: u32,
+            format: i32,
+            out: *mut *mut $modname::$target,
+        ) -> Status {
+            let Some(r) = (unsafe { gpu_ref(renderer) }) else { return Status::Null };
+            let format = match format {
+                0 => crate::paint::daegpu::backend::SurfaceFormat::Rgba8Unorm,
+                1 => crate::paint::daegpu::backend::SurfaceFormat::Bgra8Unorm,
+                _ => return Status::Range,
+            };
+            match unsafe { r.0.target_from_texture(texture, width, height, format) } {
+                Ok(t) => unsafe {
+                    deliver(out, $modname::$target { inner: t, _renderer: Arc::clone(&r.0) })
+                },
+                Err(e) => $modname::err_status(&e),
+            }
+        }
+
+        // Named so the macro's second handle reads as what it is at each call site.
+        #[allow(dead_code)]
+        const $second: () = ();
+    };
+}
+
+#[cfg(windows)]
+d3d_surface!(
+    d3d11, D3d11Renderer, D3d11Target,
+    daegun_d3d11_renderer_from_device, daegun_d3d11_target_from_texture, D3D11_SECOND_IS_CONTEXT
+);
+
+#[cfg(windows)]
+d3d_surface!(
+    d3d12, D3d12Renderer, D3d12Target,
+    daegun_d3d12_renderer_from_device, daegun_d3d12_target_from_texture, D3D12_SECOND_IS_QUEUE
+);
 
 #[cfg(windows)]
 d3d_extras!(d3d11, D3d11Renderer, daegun_d3d11_feature_level, daegun_d3d11_is_software);

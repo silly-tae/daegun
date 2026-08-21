@@ -445,7 +445,7 @@ fn initial_reordering_syllable(p: &Plan, start: usize, end: usize, buffer: &mut 
         move_post_base_halant(p, base, end, buffer);
     }
 
-    attach_marks_to_neighbours(start, end, buffer);
+    attach_marks_to_neighbors(start, end, buffer);
     give_post_base_consonants_their_marks(base, end, buffer);
 
     let base = sort_syllable(p, start, base, end, buffer);
@@ -560,7 +560,7 @@ fn move_post_base_halant(p: &Plan, base: usize, end: usize, buffer: &mut Buffer)
     }
 }
 
-fn attach_marks_to_neighbours(start: usize, end: usize, buffer: &mut Buffer) {
+fn attach_marks_to_neighbors(start: usize, end: usize, buffer: &mut Buffer) {
     let mut last_pos = position::START;
 
     for i in start..end {

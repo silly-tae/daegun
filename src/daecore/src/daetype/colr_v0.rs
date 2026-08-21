@@ -128,8 +128,8 @@ pub fn colr_layers_for_palette(
         let rec = layers_off + (first_layer + l) * 4;
         let layer_gid = read_u16_be(colr, rec)?;
         let pal_idx   = read_u16_be(colr, rec + 2)?;
-        // The one index CPAL cannot resolve: it means "whatever colour the text is", which is the
-        // caller's to supply – hence a flag on the layer rather than a colour.
+        // The one index CPAL cannot resolve: it means "whatever color the text is", which is the
+        // caller's to supply – hence a flag on the layer rather than a color.
         if pal_idx == 0xFFFF {
             out.push((layer_gid, 0, 0, 0, 255, true));
             continue;

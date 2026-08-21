@@ -49,16 +49,16 @@ fn over_coverage(f: &Font, ch: &str, px: f32) -> f32 {
         .fold(0.0f32, f32::max)
 }
 
-/// A glyph whose contours overlap must not be drawn with more ink than it has.
-///
-/// The coverage accumulator holds the integral of winding over each pixel, so where two contours
-/// both partly cover one pixel it adds their shares and clamps. Interiors survive that; antialiased
-/// edges do not. Inter's "4" is a diagonal and a stem that share a flat top at y = 1490 and overlap
-/// in x from 822 to 887, and its top row read `45 188 255 255 188 188 143` — a single straight edge
-/// cannot be 255 in one column and 188 in the next. `A` is the same story where its crossbar meets
-/// the diagonals.
-///
-/// `Geometry::finalize` now unions the contours first, which leaves one boundary and one count.
+// A glyph whose contours overlap must not be drawn with more ink than it has.
+//
+// The coverage accumulator holds the integral of winding over each pixel, so where two contours
+// both partly cover one pixel it adds their shares and clamps. Interiors survive that; antialiased
+// edges do not. Inter's "4" is a diagonal and a stem that share a flat top at y = 1490 and overlap
+// in x from 822 to 887, and its top row read `45 188 255 255 188 188 143` — a single straight edge
+// cannot be 255 in one column and 188 in the next. `A` is the same story where its crossbar meets
+// the diagonals.
+//
+// `Geometry::finalize` now unions the contours first, which leaves one boundary and one count.
 #[test]
 fn overlapping_contours_are_not_drawn_twice() {
     let Some(f) = font("inter/InterVariable.ttf") else { return };
@@ -74,11 +74,11 @@ fn overlapping_contours_are_not_drawn_twice() {
     }
 }
 
-/// The controls, which say the resolver is not simply running everywhere and flattening detail out.
-///
-/// `l`, `I` and `H` are single contours. `o` and `8` are nested ones, wound opposite so the counter
-/// is a hole — an arrangement a winding accumulator already gets right, and one the resolver must
-/// leave alone. They read the same before and after the fix, which is the point.
+// The controls, which say the resolver is not simply running everywhere and flattening detail out.
+//
+// `l`, `I` and `H` are single contours. `o` and `8` are nested ones, wound opposite so the counter
+// is a hole — an arrangement a winding accumulator already gets right, and one the resolver must
+// leave alone. They read the same before and after the fix, which is the point.
 #[test]
 fn glyphs_without_overlap_are_untouched() {
     let Some(f) = font("inter/InterVariable.ttf") else { return };
@@ -88,11 +88,11 @@ fn glyphs_without_overlap_are_untouched() {
     }
 }
 
-/// Across four faces and three scripts, rather than the two glyphs the defect was found on.
-///
-/// Before the contours were unioned this stood at 45 of 398 glyphs for Inter and 310 of 398 for
-/// Source Serif. What is left is glyphs the resolver declined — its guard withholds a union it
-/// cannot verify, and the fallback is the old rendering.
+// Across four faces and three scripts, rather than the two glyphs the defect was found on.
+//
+// Before the contours were unioned this stood at 45 of 398 glyphs for Inter and 310 of 398 for
+// Source Serif. What is left is glyphs the resolver declined — its guard withholds a union it
+// cannot verify, and the fallback is the old rendering.
 #[test]
 fn few_glyphs_anywhere_carry_extra_ink() {
     let faces = [

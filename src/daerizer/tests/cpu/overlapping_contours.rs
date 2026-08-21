@@ -29,16 +29,16 @@ fn top_row(build: &dyn Fn(&mut Path)) -> Vec<u8> {
     (0..s.width).map(|x| s.rgba[(row * s.width + x) * 4 + 3]).collect()
 }
 
-/// Two contours that overlap must render as their union.
-///
-/// The coverage accumulator holds one float per pixel: the integral of winding over that pixel. A
-/// pixel that two contours both partly cover gets each one's share added, so an antialiased edge
-/// came out at twice its coverage — `102 102 204 204 204 102 102` along an edge that is one straight
-/// line and has to be constant. Inter's "4" is exactly this shape, its diagonal and its stem sharing
-/// a flat top, and it rendered that top at 255 in the middle and 188 either side.
-///
-/// The tops here are at y = 10.4, so every column of the top row is 40% covered whichever contours
-/// produced it.
+// Two contours that overlap must render as their union.
+//
+// The coverage accumulator holds one float per pixel: the integral of winding over that pixel. A
+// pixel that two contours both partly cover gets each one's share added, so an antialiased edge
+// came out at twice its coverage — `102 102 204 204 204 102 102` along an edge that is one straight
+// line and has to be constant. Inter's "4" is exactly this shape, its diagonal and its stem sharing
+// a flat top, and it rendered that top at 255 in the middle and 188 either side.
+//
+// The tops here are at y = 10.4, so every column of the top row is 40% covered whichever contours
+// produced it.
 #[test]
 fn two_overlapping_contours_read_the_same_as_their_union() {
     let one = top_row(&|p| rect(p, 0.0, 15.0, 0.0, 10.4));
@@ -59,11 +59,11 @@ fn two_overlapping_contours_read_the_same_as_their_union() {
     );
 }
 
-/// The same two contours apart, which the union must leave alone.
-///
-/// Nested and disjoint contours are already an arrangement a winding accumulator gets right, and the
-/// resolver is gated on a winding of two or more so that it never runs for them. Without a control
-/// saying so, a resolver that quietly ran on every glyph would look identical here.
+// The same two contours apart, which the union must leave alone.
+//
+// Nested and disjoint contours are already an arrangement a winding accumulator gets right, and the
+// resolver is gated on a winding of two or more so that it never runs for them. Without a control
+// saying so, a resolver that quietly ran on every glyph would look identical here.
 #[test]
 fn contours_that_do_not_overlap_are_left_alone() {
     let apart = top_row(&|p| {

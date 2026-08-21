@@ -14,7 +14,7 @@ pub enum StripeOrder {
 }
 
 impl StripeOrder {
-    fn centres(self) -> [usize; 3] {
+    fn centers(self) -> [usize; 3] {
         match self {
             StripeOrder::Rgb => [0, 1, 2],
             StripeOrder::Bgr => [2, 1, 0],
@@ -114,9 +114,9 @@ impl SubpixelLayout {
         let reach = kernel.len() / 2;
         let taps = span + kernel.len() - 1;
         let mut weights = [[0.0; MAX_WEIGHTS]; 3];
-        for (c, centre) in order.centres().iter().enumerate() {
+        for (c, center) in order.centers().iter().enumerate() {
             for (k, &w) in kernel.iter().enumerate() {
-                weights[c][centre + k] += w;
+                weights[c][center + k] += w;
             }
         }
         let (ox, oy) = if horizontal { (span as u8, 1) } else { (1, span as u8) };
