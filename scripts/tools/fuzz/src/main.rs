@@ -231,8 +231,8 @@ fn exercise(bytes: &[u8], texts: &[String]) {
     if !at.is_empty()
         && let Ok(inst_font) = daegun::Font::from_bytes(&inst) {
         for text in texts.iter().take(3) {
-            let a = f.shape(text, &at, false).map(|r| r.glyphs);
-            let b = inst_font.shape(text, &[], false).map(|r| r.glyphs);
+            let a = f.shape(text, &at, false).map(|r| r.glyphs.clone());
+            let b = inst_font.shape(text, &[], false).map(|r| r.glyphs.clone());
             must!(a == b, "shape at axes != shape of the instance on {text:?}: {a:?} vs {b:?}");
         }
     }
