@@ -156,6 +156,38 @@ static void a_real_font_answers(const char *path)
           "cache stats with one NULL out-parameter failed");
     CHECK(count == 0, "the cache holds %zu glyphs after being cleared and bounded to zero", count);
 
+    /* The other five budgets, through the same door. */
+    CHECK(daegun_font_set_curve_cache_bytes(font, 64 * 1024) == DAEGUN_OK, "curve budget failed");
+    CHECK(daegun_font_clear_curve_cache(font) == DAEGUN_OK, "clearing curves failed");
+    CHECK(daegun_font_curve_cache_stats(font, &count, &cbytes) == DAEGUN_OK, "curve stats failed");
+    CHECK(count == 0 && cbytes == 0, "curve cache held %zu entries after clearing", count);
+
+    CHECK(daegun_font_set_outline_cache_bytes(font, 64 * 1024) == DAEGUN_OK, "outline budget failed");
+    CHECK(daegun_font_outline_cache_stats(font, &count, NULL) == DAEGUN_OK, "outline stats failed");
+    CHECK(count == 0, "outline cache held %zu entries after clearing", count);
+
+    CHECK(daegun_font_set_shape_cache_bytes(font, 32 * 1024) == DAEGUN_OK, "shape budget failed");
+    CHECK(daegun_font_clear_shape_cache(font) == DAEGUN_OK, "clearing shapes failed");
+    CHECK(daegun_font_shape_cache_stats(font, &count, &cbytes) == DAEGUN_OK, "shape stats failed");
+    CHECK(count == 0 && cbytes == 0, "shape cache held %zu entries after clearing", count);
+
+    size_t locations = 1, tables = 1;
+    CHECK(daegun_font_set_instance_cache_bytes(font, 1024 * 1024) == DAEGUN_OK, "instance budget failed");
+    CHECK(daegun_font_instance_cache_stats(font, &locations, &tables) == DAEGUN_OK, "instance stats failed");
+
+    size_t allowance = 0;
+    CHECK(daegun_font_set_cmap_index_allowance(font, 4321) == DAEGUN_OK, "index allowance failed");
+    CHECK(daegun_font_cmap_index_allowance(font, &allowance) == DAEGUN_OK, "reading allowance failed");
+    CHECK(allowance == 4321, "allowance read back as %zu", allowance);
+
+    /* Every one of them has to refuse a null font rather than dereference it. */
+    CHECK(daegun_font_set_curve_cache_bytes(NULL, 0) == DAEGUN_NULL, "null curve budget accepted");
+    CHECK(daegun_font_set_outline_cache_bytes(NULL, 0) == DAEGUN_NULL, "null outline budget accepted");
+    CHECK(daegun_font_set_shape_cache_bytes(NULL, 0) == DAEGUN_NULL, "null shape budget accepted");
+    CHECK(daegun_font_set_instance_cache_bytes(NULL, 0) == DAEGUN_NULL, "null instance budget accepted");
+    CHECK(daegun_font_set_cmap_index_allowance(NULL, 0) == DAEGUN_NULL, "null allowance accepted");
+    CHECK(daegun_font_cmap_index_allowance(NULL, &allowance) == DAEGUN_NULL, "null allowance read accepted");
+
     daegun_font_free(font);
 }
 

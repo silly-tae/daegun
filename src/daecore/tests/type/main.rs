@@ -7,6 +7,12 @@ mod autohint_points;
 
 mod stroke;
 
+mod contour_start;
+
+mod cff2_outlines;
+
+mod font_structure;
+
 mod hint_latency;
 
 mod colr_latency;

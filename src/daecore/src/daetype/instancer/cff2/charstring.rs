@@ -2,7 +2,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use crate::daecore::daetype::format::cff::{decode_charstring_number_fx, charstring_number_error, subr_bias};
 use crate::daecore::daetype::format::ivs::{ItemVariationStore, region_scalars};
-use crate::daecore::daetype::format::round::banker_round;
+use crate::daecore::daetype::format::round::banker_round_i64;
 
 pub(crate) struct Scratch {
     stack:        [Fx; MAX_OPERANDS],
@@ -208,7 +208,7 @@ fn run(
                     for i in 0..n {
                         let delta = s * (state.stack[deltas_start + i] as f64 * FX_TO_F64);
                         state.stack[defaults_start + i] = state.stack[defaults_start + i]
-                            .saturating_add((banker_round(delta) as Fx) << FX_SHIFT);
+                            .saturating_add(banker_round_i64(delta * FX_ONE as f64));
                     }
                 } else {
                     for i in 0..n {
@@ -217,7 +217,7 @@ fn run(
                             delta += s * (state.stack[deltas_start + i * k + r] as f64 * FX_TO_F64);
                         }
                         state.stack[defaults_start + i] = state.stack[defaults_start + i]
-                            .saturating_add((banker_round(delta) as Fx) << FX_SHIFT);
+                            .saturating_add(banker_round_i64(delta * FX_ONE as f64));
                     }
                 }
                 sp = defaults_start + n;

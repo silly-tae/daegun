@@ -1,6 +1,6 @@
 [package]
 name = "daegun"
-version = "1.1.0"
+version = "1.1.5"
 edition = "2024"
 rust-version = "1.97.1"
 description = "Your all-in-one text engine. Rust, no_std, zero dependencies."
@@ -31,6 +31,10 @@ path = "src/daegun/tests/api/main.rs"
 [[test]]
 name = "motion"
 path = "src/daegun/tests/motion/main.rs"
+
+[[test]]
+name = "alloc"
+path = "src/daegun/tests/alloc/main.rs"
 
 [profile.release]
 opt-level = 3

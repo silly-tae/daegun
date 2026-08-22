@@ -29,14 +29,27 @@ pub fn union(contours: &[Vec<Pt>]) -> Vec<Vec<Pt>> {
 // what catches a misclassified edge, which is how a spurious hole or spike would get through.
 //
 // `None` is not a failure to handle, it is the instruction to keep what you had.
-pub fn union_verified(contours: &[Vec<Pt>]) -> Option<Vec<Vec<Pt>>> {
-    let (before, kept) = boundary(contours)?;
+// The union, but only for contours that actually overlap, and only when it verifies. One
+// arrangement serves both questions.
+pub fn union_if_overlapping(contours: &[Vec<Pt>]) -> Option<Vec<Vec<Pt>>> {
+    if contours.len() < 2 {
+        return None;
+    }
+    let before = Arrangement::new(edges_of(contours));
+    if !overlaps(&before) {
+        return None;
+    }
+    union_from(before)
+}
+
+fn union_from(before: Arrangement) -> Option<Vec<Vec<Pt>>> {
+    let (before, kept) = boundary_of(before)?;
     let (out, closed) = chain(&kept);
     if !closed || out.is_empty() {
         return None;
     }
 
-    let mut after: Vec<Edge> = Vec::new();
+    let mut after: Vec<Edge> = Vec::with_capacity(out.iter().map(Vec::len).sum());
     for c in &out {
         for i in 0..c.len() {
             let (a, b) = (c[i], c[(i + 1) % c.len()]);
@@ -77,11 +90,9 @@ pub fn union_verified(contours: &[Vec<Pt>]) -> Option<Vec<Vec<Pt>>> {
 // region without having to know where it is. That is one probe per edge against a bucketed
 // arrangement rather than against every edge, which is what makes it cheap enough to run for every
 // glyph — about a fifth of a microsecond, against the sixty the resolution itself costs.
-pub fn needs_union(contours: &[Vec<Pt>]) -> bool {
-    if contours.len() < 2 {
-        return false;
-    }
-    let arrangement = Arrangement::new(edges_of(contours));
+// Whether any point is covered twice over. Takes the arrangement rather than the contours so the
+// caller that goes on to resolve them does not build a second identical one.
+fn overlaps(arrangement: &Arrangement) -> bool {
     for &(a, b) in arrangement.edges() {
         let mid = ((a.0 + b.0) * 0.5, (a.1 + b.1) * 0.5);
         let n = normal(a, b);
@@ -95,7 +106,7 @@ pub fn needs_union(contours: &[Vec<Pt>]) -> bool {
 }
 
 fn edges_of(contours: &[Vec<Pt>]) -> Vec<Edge> {
-    let mut edges: Vec<Edge> = Vec::new();
+    let mut edges: Vec<Edge> = Vec::with_capacity(contours.iter().map(Vec::len).sum());
     for c in contours {
         for i in 0..c.len() {
             let (a, b) = (c[i], c[(i + 1) % c.len()]);
@@ -108,14 +119,16 @@ fn edges_of(contours: &[Vec<Pt>]) -> Vec<Edge> {
 }
 
 fn boundary(contours: &[Vec<Pt>]) -> Option<(Arrangement, Vec<Edge>)> {
-    let edges = edges_of(contours);
-    if edges.len() < 3 {
+    boundary_of(Arrangement::new(edges_of(contours)))
+}
+
+fn boundary_of(before: Arrangement) -> Option<(Arrangement, Vec<Edge>)> {
+    if before.edges().len() < 3 {
         return None;
     }
 
-    let split = split_at_crossings(&edges);
-    let before = Arrangement::new(edges);
-    let mut kept: Vec<Edge> = Vec::new();
+    let split = split_at_crossings(&before);
+    let mut kept: Vec<Edge> = Vec::with_capacity(split.len());
     for &(a, b) in &split {
         let mid = ((a.0 + b.0) * 0.5, (a.1 + b.1) * 0.5);
         let n = normal(a, b);
@@ -173,7 +186,8 @@ fn same_bounds(a: &[Edge], b: &[Edge]) -> bool {
     x.iter().zip(&y).all(|(p, q)| (p - q).abs() < EPS * 10.0)
 }
 
-fn split_at_crossings(edges: &[Edge]) -> Vec<Edge> {
+fn split_at_crossings(before: &Arrangement) -> Vec<Edge> {
+    let edges = before.edges();
     // Boxes first. Every edge is otherwise tested against every other with real arithmetic, twice
     // over once collinear overlap is looked for as well, and almost none of those pairs are
     // anywhere near each other. The margin is the tolerance the tests below work to.
@@ -313,15 +327,20 @@ impl Arrangement {
         &self.edges
     }
 
+
     pub(crate) fn winding(&self, p: Pt) -> i32 {
         let k = (((p.1 - self.ymin) * self.inv) as isize).clamp(0, self.start.len() as isize - 2);
         let (k, mut w) = (k as usize, 0i32);
+        // The crossing test multiplied through by the y span, which takes a divide out of the
+        // innermost loop here and flips the comparison when that span is negative.
         for &i in &self.index[self.start[k] as usize..self.start[k + 1] as usize] {
             let (a, b) = self.edges[i as usize];
             if (a.1 <= p.1) != (b.1 <= p.1) {
-                let t = (p.1 - a.1) / (b.1 - a.1);
-                if a.0 + t * (b.0 - a.0) > p.0 {
-                    w += if b.1 > a.1 { 1 } else { -1 };
+                let dy = b.1 - a.1;
+                let lhs = (p.1 - a.1) * (b.0 - a.0);
+                let rhs = (p.0 - a.0) * dy;
+                if if dy > 0.0 { lhs > rhs } else { lhs < rhs } {
+                    w += if dy > 0.0 { 1 } else { -1 };
                 }
             }
         }
@@ -353,12 +372,16 @@ fn chain(edges: &[Edge]) -> (Vec<Vec<Pt>>, bool) {
     let mut out: Vec<Vec<Pt>> = Vec::new();
     let mut closed = true;
 
+
     for start in 0..edges.len() {
         if used[start] {
             continue;
         }
         used[start] = true;
-        let mut contour = alloc::vec![edges[start].0];
+        // Bounded by what is left rather than grown from one: a contour can consume every remaining
+        // edge, and MAX_RESOLVE_EDGES keeps the over-reservation small.
+        let mut contour = Vec::with_capacity(edges.len() - start);
+        contour.push(edges[start].0);
         let mut at = edges[start].1;
         let first = edges[start].0;
 

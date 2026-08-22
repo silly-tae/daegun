@@ -404,10 +404,8 @@ impl Geometry {
         if contours.len() < 2 {
             return;
         }
-        if !crate::daecore::daetype::outline::simplify::needs_union(&contours) {
-            return;
-        }
-        let Some(resolved) = crate::daecore::daetype::outline::simplify::union_verified(&contours)
+        let Some(resolved) =
+            crate::daecore::daetype::outline::simplify::union_if_overlapping(&contours)
         else {
             return;
         };

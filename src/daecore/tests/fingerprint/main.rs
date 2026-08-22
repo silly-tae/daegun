@@ -225,7 +225,7 @@ fn instanced_fonts() {
             Err(e) => f.bytes(e.as_bytes()),
         }
     }
-    check("instanced fonts", f.done(), 0xd648_d519_311d_ec45);
+    check("instanced fonts", f.done(), 0x7766_92b9_3e79_379b);
 }
 
 #[test]

@@ -6,7 +6,9 @@ use crate::daecore::daeshaper::plan::ShapePlan;
 use super::{PauseFn, Shaper, ZeroWidthMarks};
 use super::syllabic;
 use super::syllable::{self, Segment};
-use crate::daecore::daeshaper::generated::syllable_tables::{use_accept, UseSyllable, USE_TRANSITIONS};
+use crate::daecore::daeshaper::generated::syllable_tables::{
+    lana_accept, use_accept, UseSyllable, LANA_TRANSITIONS, USE_TRANSITIONS,
+};
 use crate::daecore::daeshaper::ot::tag::Tag;
 use crate::daecore::daeshaper::unicode::{self, Script};
 use crate::daecore::daeshaper::generated::use_tables;
@@ -90,6 +92,10 @@ pub(crate) const ARABIC_JOINING: &[&str] = &[
     "Adlam", "Arabic", "Chorasmian", "Hanifi_Rohingya", "Mandaic", "Manichaean", "Mongolian",
     "Nko", "Old_Uyghur", "Phags_Pa", "Psalter_Pahlavi", "Sogdian", "Syriac",
 ];
+
+fn is_tai_tham(script: Option<Script>) -> bool {
+    script.is_some_and(|s| s.name() == "Tai_Tham")
+}
 
 fn has_arabic_joining(script: Option<Script>) -> bool {
     script.is_some_and(|s| ARABIC_JOINING.contains(&s.name()))
@@ -217,13 +223,25 @@ fn segment_into_syllables(buffer: &mut Buffer) {
         included.iter().map(|&i| buffer.info[i].use_category()).collect();
 
     let mut segments = syllable::Segments::new();
-    syllable::segment(
-        included.len(),
-        &USE_TRANSITIONS,
-        |i| categories[i],
-        use_accept,
-        |s| segments.push(s),
-    );
+    // Tai Tham writes a cluster's vowels in orders the specification's pattern forbids, so it gets
+    // a grammar of its own. Every other script keeps the pattern exactly.
+    if is_tai_tham(buffer.script) {
+        syllable::segment(
+            included.len(),
+            &LANA_TRANSITIONS,
+            |i| categories[i],
+            lana_accept,
+            |s| segments.push(s),
+        );
+    } else {
+        syllable::segment(
+            included.len(),
+            &USE_TRANSITIONS,
+            |i| categories[i],
+            use_accept,
+            |s| segments.push(s),
+        );
+    }
     let segments = segments.as_slice();
 
     let mut spans = syllable::Segments::new();

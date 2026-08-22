@@ -41,8 +41,10 @@ impl Font {
         Some(out)
     }
 
-    pub fn shape(&self, text: &str, axes: &[(&str, f64)], vertical: bool) -> Option<ShapedRun> {
-        self.cache.shaped_run(&owned_axes(axes), text, vertical).map(|rc| (*rc).clone())
+    // Shared, not owned: the run is already behind a refcount in the cache, and handing back a copy
+    // meant every hit cloned seven vectors for a caller that almost always only reads them.
+    pub fn shape(&self, text: &str, axes: &[(&str, f64)], vertical: bool) -> Option<Shared<ShapedRun>> {
+        self.cache.shaped_run(axes, text, vertical)
     }
 
     pub fn shape_with_language(&self, text: &str, axes: &[(&str, f64)], vertical: bool, language: &str) -> Option<ShapedRun> {

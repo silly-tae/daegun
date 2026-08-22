@@ -118,6 +118,8 @@ pub fn outline_cff_glyph_hinted(
         return Ok(CffHints::default());
     }
 
+    let mut pen = CloseElidingPen { inner: pen, start: (0.0, 0.0), pending: None };
+    let pen = &mut pen;
     let mut state = State {
         stack: Vec::with_capacity(TYPE2_OPERAND_LIMIT), x: 0.0, y: 0.0, n_stems: 0,
         hints: Some(CffHints::default()), points: 0,
@@ -157,6 +159,49 @@ fn draw_seac(
         .ok_or("CFF: seac accent glyph index out of range")?)?;
     let mut offset_pen = SeacOffsetPen { inner: pen, dx: adx as f32, dy: ady as f32 };
     draw_charstring(cff, accent_cs, global_subrs, local_subrs, &mut offset_pen)
+}
+
+// A charstring may walk back to where its contour began, and that segment is the one `close`
+// already draws. Held one step back so it can be dropped when the contour ends there.
+struct CloseElidingPen<'a> {
+    inner:   &'a mut dyn OutlinePen,
+    start:   (f32, f32),
+    pending: Option<(f32, f32)>,
+}
+
+impl CloseElidingPen<'_> {
+    fn flush(&mut self) {
+        if let Some((x, y)) = self.pending.take() {
+            self.inner.line_to(x, y);
+        }
+    }
+}
+
+impl OutlinePen for CloseElidingPen<'_> {
+    fn move_to(&mut self, x: f32, y: f32) {
+        self.flush();
+        self.start = (x, y);
+        self.inner.move_to(x, y);
+    }
+    fn line_to(&mut self, x: f32, y: f32) {
+        self.flush();
+        self.pending = Some((x, y));
+    }
+    fn quad_to(&mut self, cx: f32, cy: f32, x: f32, y: f32) {
+        self.flush();
+        self.inner.quad_to(cx, cy, x, y);
+    }
+    fn curve_to(&mut self, c1x: f32, c1y: f32, c2x: f32, c2y: f32, x: f32, y: f32) {
+        self.flush();
+        self.inner.curve_to(c1x, c1y, c2x, c2y, x, y);
+    }
+    fn close(&mut self) {
+        if self.pending == Some(self.start) {
+            self.pending = None;
+        }
+        self.flush();
+        self.inner.close();
+    }
 }
 
 struct SeacOffsetPen<'a> { inner: &'a mut dyn OutlinePen, dx: f32, dy: f32 }
@@ -229,6 +274,8 @@ pub(crate) fn draw_charstring(
     local_subrs:  &[Span],
     pen:          &mut dyn OutlinePen,
 ) -> Result<(), String> {
+    let mut pen = CloseElidingPen { inner: pen, start: (0.0, 0.0), pending: None };
+    let pen = &mut pen;
     let mut state = State {
         stack: Vec::with_capacity(TYPE2_OPERAND_LIMIT), x: 0.0, y: 0.0, n_stems: 0, hints: None, points: 0,
         width_taken: false, open_path: false, depth: 0,

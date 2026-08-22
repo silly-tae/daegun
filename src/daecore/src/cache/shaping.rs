@@ -100,18 +100,18 @@ impl FontCache {
         digest
     }
 
-    pub fn shaped_run(&self, axis_values: &[(String, f64)], text: &str, vertical: bool) -> Option<Shared<crate::daecore::text::shape::ShapedRun>> {
+    pub fn shaped_run<S: AsRef<str>>(&self, axis_values: &[(S, f64)], text: &str, vertical: bool) -> Option<Shared<crate::daecore::text::shape::ShapedRun>> {
         let ctx = crate::daecore::cache::RunContext::default();
         self.shaped_run_in_context(axis_values, text, vertical, &ctx)
     }
 
-    pub fn shaped_run_directional(&self, axis_values: &[(String, f64)], text: &str, vertical: bool, rtl: bool) -> Option<Shared<crate::daecore::text::shape::ShapedRun>> {
+    pub fn shaped_run_directional<S: AsRef<str>>(&self, axis_values: &[(S, f64)], text: &str, vertical: bool, rtl: bool) -> Option<Shared<crate::daecore::text::shape::ShapedRun>> {
         let ctx = crate::daecore::cache::RunContext { rtl: Some(rtl), ..Default::default() };
         self.shaped_run_in_context(axis_values, text, vertical, &ctx)
     }
 
-    pub fn shaped_run_in_context(
-        &self, axis_values: &[(String, f64)], text: &str, vertical: bool,
+    pub fn shaped_run_in_context<S: AsRef<str>>(
+        &self, axis_values: &[(S, f64)], text: &str, vertical: bool,
         ctx: &crate::daecore::cache::RunContext,
     ) -> Option<Shared<crate::daecore::text::shape::ShapedRun>> {
         use crate::daecore::daeshaper::buffer::Buffer;
@@ -122,9 +122,10 @@ impl FontCache {
         };
         let post: String = ctx.after.chars().take(n).collect();
 
-        let axes = canonical_axes(axis_values);
+        // Built by moving rather than cloning, and read back out of the key afterwards: a cache hit
+        // would otherwise pay for an owned copy of everything it is only looking up.
         let key = (
-            axes.clone(), text.to_string(), vertical, ctx.rtl, pre.clone(), post.clone(),
+            canonical_axes(axis_values), text.to_string(), vertical, ctx.rtl, pre, post,
             ctx.script.map(String::from), ctx.language.map(String::from),
             ctx.seed_script.map(|s| s.0),
         );
@@ -134,21 +135,22 @@ impl FontCache {
                 return Some(Shared::clone(hit));
             }
         }
+        let (axes, pre, post) = (&key.0, &key.4, &key.5);
         let opts = crate::daecore::text::shape::ShapeOptions {
-            before: &pre,
-            after: &post,
+            before: pre,
+            after: post,
             script: ctx.script,
             language: ctx.language,
             seed_script: ctx.seed_script,
             ..Default::default()
         };
         let run = Shared::new(crate::daecore::text::shape::shape_run_stated_with_options(
-            self, &axes, text, vertical, ctx.rtl, &opts,
+            self, axes, text, vertical, ctx.rtl, &opts,
         )?);
         let cost = ShapeCache::cost(&key, &run);
         if cost <= SHAPE_CACHE_ENTRY_MAX {
             let mut cache = write(&self.shape_cache);
-            if cache.bytes + cost > SHAPE_CACHE_BYTES {
+            if cache.bytes + cost > self.shape_budget.get() {
                 cache.runs.clear();
                 cache.bytes = 0;
             }

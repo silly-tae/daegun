@@ -94,7 +94,7 @@ typedef struct daegun_font daegun_font;
  * is not detectable any other way. */
 uint32_t daegun_abi_version(void);
 
-#define DAEGUN_ABI_VERSION ((1u << 16) | (1u << 8) | 0u)
+#define DAEGUN_ABI_VERSION ((1u << 16) | (1u << 8) | 5u)
 
 /* What the last failing call ON THIS THREAD said, as UTF-8. Empty when nothing has failed.
  *
@@ -165,6 +165,42 @@ daegun_status daegun_font_clear_glyph_cache(const daegun_font *font);
 /* How many glyphs the cache holds, and how many bytes that is. Either pointer may be NULL. */
 daegun_status daegun_font_glyph_cache_stats(const daegun_font *font, size_t *out_count,
                                             size_t *out_bytes);
+
+/* The remaining caches, each a ceiling grown into rather than memory reserved up front. Every one
+ * of them is dead weight for some caller: a CPU-only program never fills the curve cache, a
+ * Latin-only one never approaches the cmap index bound, a fixed-weight one never instances a
+ * variable font. Defaults are 4 MB curve, 4 MB outline, 8 MB shape, 64 MB instance, 25 MB index. */
+
+/* Built glyph curves for the GPU backends. Zero on a program that only rasterizes. */
+daegun_status daegun_font_set_curve_cache_bytes(const daegun_font *font, size_t bytes);
+daegun_status daegun_font_clear_curve_cache(const daegun_font *font);
+daegun_status daegun_font_curve_cache_stats(const daegun_font *font, size_t *out_count,
+                                            size_t *out_bytes);
+
+/* Decoded outlines, shared by the raster and stroke paths. Emptied by daegun_font_clear_prewarm,
+ * which is the call that fills it. */
+daegun_status daegun_font_set_outline_cache_bytes(const daegun_font *font, size_t bytes);
+daegun_status daegun_font_outline_cache_stats(const daegun_font *font, size_t *out_count,
+                                              size_t *out_bytes);
+
+/* Shaped runs, keyed by text. Worth lowering where the text never repeats, as in a log or a chat
+ * transcript, since nothing cached there is ever read back. */
+daegun_status daegun_font_set_shape_cache_bytes(const daegun_font *font, size_t bytes);
+daegun_status daegun_font_clear_shape_cache(const daegun_font *font);
+daegun_status daegun_font_shape_cache_stats(const daegun_font *font, size_t *out_count,
+                                            size_t *out_bytes);
+
+/* Instanced variable fonts, the largest default by a wide margin. Only an animated axis fills it,
+ * so a program that renders one fixed weight can set it close to zero. Reports the bytes held for
+ * axis locations and for the instanced tables separately; either pointer may be NULL. */
+daegun_status daegun_font_set_instance_cache_bytes(const daegun_font *font, size_t bytes);
+daegun_status daegun_font_instance_cache_stats(const daegun_font *font, size_t *out_locations,
+                                               size_t *out_tables);
+
+/* Unlike the others this is what is left to spend rather than a ceiling: building a cmap index
+ * draws it down and never returns it, so setting it grants a fresh allowance. Sized for CJK. */
+daegun_status daegun_font_set_cmap_index_allowance(const daegun_font *font, size_t bytes);
+daegun_status daegun_font_cmap_index_allowance(const daegun_font *font, size_t *out_bytes);
 
 /* options */
 
@@ -1864,6 +1900,13 @@ daegun_status daegun_vulkan_target_from_image(const daegun_vulkan_renderer *rend
  *
  * dual_src_blend is what you ENABLED at device creation, not what the hardware supports: daegun
  * cannot tell them apart, and without it there is no subpixel pipeline. */
+/* The handles behind the renderer, for building a swapchain on the device daegun made. They belong
+ * to the renderer and die with it, so nothing built on them may outlive it. Vulkan's dispatchable
+ * handles are pointers, so each arrives as a plain void *. Any out-pointer may be NULL. */
+daegun_status daegun_vulkan_renderer_handles(const daegun_vulkan_renderer *renderer,
+                                             void **out_instance, void **out_physical_device,
+                                             void **out_device, uint32_t *out_queue_family);
+
 daegun_status daegun_vulkan_renderer_from_device(void *instance, void *physical_device,
                                                  void *device, uint32_t queue_family,
                                                  int32_t dual_src_blend,
@@ -1876,6 +1919,10 @@ DAEGUN_DECLARE_BACKEND(d3d12);
  * which daegun_policy's avoid_software_gpu exists to steer away from. */
 daegun_status daegun_d3d11_feature_level(const daegun_d3d11_renderer *renderer, daegun_text **out);
 daegun_status daegun_d3d11_is_software(const daegun_d3d11_renderer *renderer, int32_t *out);
+/* The device and its immediate context, for drawing into a swapchain the caller owns. Both belong
+ * to the renderer and die with it. Either out-pointer may be NULL. */
+daegun_status daegun_d3d11_renderer_handles(const daegun_d3d11_renderer *renderer,
+                                            void **out_device, void **out_second);
 /* Adopts a device the caller already made, which is what lets daegun draw into that device's
  * swapchain: a backbuffer belongs to the device its swapchain was created on. daegun takes a COM
  * reference on each handle and releases only those.
@@ -1899,6 +1946,10 @@ daegun_status daegun_d3d12_target_from_texture(const daegun_d3d12_renderer *rend
 
 daegun_status daegun_d3d12_feature_level(const daegun_d3d12_renderer *renderer, daegun_text **out);
 daegun_status daegun_d3d12_is_software(const daegun_d3d12_renderer *renderer, int32_t *out);
+/* The device and its command queue – the second handle is the queue on D3D12 where it is the
+ * immediate context on D3D11. Either out-pointer may be NULL. */
+daegun_status daegun_d3d12_renderer_handles(const daegun_d3d12_renderer *renderer,
+                                            void **out_device, void **out_second);
 #endif
 
 /* the atlas packer, and rules */

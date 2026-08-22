@@ -30,10 +30,19 @@ use options::RasterOptionsC;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn daegun_abi_version() -> u32 {
-    const MAJOR: u32 = 1;
-    const MINOR: u32 = 1;
-    const PATCH: u32 = 0;
-    (MAJOR << 16) | (MINOR << 8) | PATCH
+    // Read from the crate version rather than restated here, because a hand-kept copy drifts out
+    // of step with the release it is meant to describe.
+    const fn num(s: &str) -> u32 {
+        let (b, mut v, mut i) = (s.as_bytes(), 0u32, 0usize);
+        while i < b.len() {
+            v = v * 10 + (b[i] - b'0') as u32;
+            i += 1;
+        }
+        v
+    }
+    (num(env!("CARGO_PKG_VERSION_MAJOR")) << 16)
+        | (num(env!("CARGO_PKG_VERSION_MINOR")) << 8)
+        | num(env!("CARGO_PKG_VERSION_PATCH"))
 }
 
 std::thread_local! {
@@ -228,6 +237,135 @@ pub unsafe extern "C" fn daegun_font_glyph_cache_stats(
     }
     if !out_bytes.is_null() {
         unsafe { *out_bytes = bytes };
+    }
+    Status::Ok
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn daegun_font_set_curve_cache_bytes(font: *const Font, bytes: usize) -> Status {
+    let Some(font) = (unsafe { borrow(font) }) else { return Status::Null };
+    font.set_curve_cache_bytes(bytes);
+    Status::Ok
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn daegun_font_clear_curve_cache(font: *const Font) -> Status {
+    let Some(font) = (unsafe { borrow(font) }) else { return Status::Null };
+    font.clear_curve_cache();
+    Status::Ok
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn daegun_font_curve_cache_stats(
+    font: *const Font,
+    out_count: *mut usize,
+    out_bytes: *mut usize,
+) -> Status {
+    let Some(font) = (unsafe { borrow(font) }) else { return Status::Null };
+    let (count, bytes) = font.curve_cache_stats();
+    if !out_count.is_null() {
+        unsafe { *out_count = count };
+    }
+    if !out_bytes.is_null() {
+        unsafe { *out_bytes = bytes };
+    }
+    Status::Ok
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn daegun_font_set_outline_cache_bytes(font: *const Font, bytes: usize) -> Status {
+    let Some(font) = (unsafe { borrow(font) }) else { return Status::Null };
+    font.set_outline_cache_bytes(bytes);
+    Status::Ok
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn daegun_font_outline_cache_stats(
+    font: *const Font,
+    out_count: *mut usize,
+    out_bytes: *mut usize,
+) -> Status {
+    let Some(font) = (unsafe { borrow(font) }) else { return Status::Null };
+    let (count, bytes) = font.outline_cache_stats();
+    if !out_count.is_null() {
+        unsafe { *out_count = count };
+    }
+    if !out_bytes.is_null() {
+        unsafe { *out_bytes = bytes };
+    }
+    Status::Ok
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn daegun_font_set_shape_cache_bytes(font: *const Font, bytes: usize) -> Status {
+    let Some(font) = (unsafe { borrow(font) }) else { return Status::Null };
+    font.set_shape_cache_bytes(bytes);
+    Status::Ok
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn daegun_font_clear_shape_cache(font: *const Font) -> Status {
+    let Some(font) = (unsafe { borrow(font) }) else { return Status::Null };
+    font.clear_shape_cache();
+    Status::Ok
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn daegun_font_shape_cache_stats(
+    font: *const Font,
+    out_count: *mut usize,
+    out_bytes: *mut usize,
+) -> Status {
+    let Some(font) = (unsafe { borrow(font) }) else { return Status::Null };
+    let (count, bytes) = font.shape_cache_stats();
+    if !out_count.is_null() {
+        unsafe { *out_count = count };
+    }
+    if !out_bytes.is_null() {
+        unsafe { *out_bytes = bytes };
+    }
+    Status::Ok
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn daegun_font_set_instance_cache_bytes(font: *const Font, bytes: usize) -> Status {
+    let Some(font) = (unsafe { borrow(font) }) else { return Status::Null };
+    font.set_instance_cache_bytes(bytes);
+    Status::Ok
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn daegun_font_instance_cache_stats(
+    font: *const Font,
+    out_locations: *mut usize,
+    out_tables: *mut usize,
+) -> Status {
+    let Some(font) = (unsafe { borrow(font) }) else { return Status::Null };
+    let (locations, tables) = font.instance_cache_stats();
+    if !out_locations.is_null() {
+        unsafe { *out_locations = locations };
+    }
+    if !out_tables.is_null() {
+        unsafe { *out_tables = tables };
+    }
+    Status::Ok
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn daegun_font_set_cmap_index_allowance(font: *const Font, bytes: usize) -> Status {
+    let Some(font) = (unsafe { borrow(font) }) else { return Status::Null };
+    font.set_cmap_index_allowance(bytes);
+    Status::Ok
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn daegun_font_cmap_index_allowance(
+    font: *const Font,
+    out_bytes: *mut usize,
+) -> Status {
+    let Some(font) = (unsafe { borrow(font) }) else { return Status::Null };
+    if !out_bytes.is_null() {
+        unsafe { *out_bytes = font.cmap_index_allowance() };
     }
     Status::Ok
 }

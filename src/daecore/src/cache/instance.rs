@@ -13,7 +13,7 @@ impl FontCache {
             .unwrap_or_else(|_| crate::daecore::daetype::decoder::build_ttf(&self.table_map)));
         let cost = ttf.len();
         let mut cache = write(&self.instance_cache);
-        if self.instance_cache_bytes.get().saturating_add(cost) > INSTANCE_BUDGET_BYTES {
+        if self.instance_cache_bytes.get().saturating_add(cost) > self.instance_budget.get() {
             cache.clear();
             self.instance_cache_bytes.set(0);
         }
@@ -42,7 +42,7 @@ impl FontCache {
         let fc = Shared::new(FontCache::new(map));
         let cost = fc.retained_bytes();
         let mut cache = write(&self.instanced_cache);
-        if self.instanced_cache_bytes.get().saturating_add(cost) > INSTANCE_BUDGET_BYTES {
+        if self.instanced_cache_bytes.get().saturating_add(cost) > self.instance_budget.get() {
             cache.clear();
             self.instanced_cache_bytes.set(0);
         }

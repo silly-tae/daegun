@@ -36,11 +36,26 @@ impl core::ops::Deref for AxisKey {
     fn deref(&self) -> &Self::Target { &self.0 }
 }
 
+// An OpenType tag is four bytes, and `fvar` stores short ones space-padded. A caller writing
+// ("M1", 1.0) for an axis tagged "M1  " otherwise gets silence rather than an error.
+pub fn normalize_tag(tag: &str) -> String {
+    let mut out = String::with_capacity(4);
+    out.push_str(tag);
+    while out.len() < 4 { out.push(' '); }
+    out
+}
+
+// Sorted and deduplicated in place. A font is asked for one or two axes, and a BTreeMap costs a
+// node allocation and a second vector to collect back out of it for that.
 pub fn canonical_axes<S: AsRef<str>>(axis_values: &[(S, f64)]) -> AxisKey {
-    let mut map: alloc::collections::BTreeMap<String, f64> = alloc::collections::BTreeMap::new();
+    let mut out: Vec<(String, f64)> = Vec::with_capacity(axis_values.len());
     for (tag, value) in axis_values {
         if !value.is_finite() { continue; }
-        map.insert(tag.as_ref().to_string(), *value);
+        let tag = normalize_tag(tag.as_ref());
+        match out.binary_search_by(|(seen, _)| seen.as_str().cmp(tag.as_str())) {
+            Ok(i) => out[i].1 = *value,
+            Err(i) => out.insert(i, (tag, *value)),
+        }
     }
-    AxisKey(map.into_iter().collect())
+    AxisKey(out)
 }

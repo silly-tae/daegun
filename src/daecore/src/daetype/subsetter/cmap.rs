@@ -1,4 +1,10 @@
-use super::super::decoder::{mac_roman_byte, mac_roman_char, read_u16_be, read_u32_be, read_u24_be, search_records};
+use super::super::decoder::{
+    mac_roman_byte, mac_roman_char, mac_turkish_byte, mac_turkish_char,
+    read_u16_be, read_u32_be, read_u24_be, search_records,
+};
+
+// Language 18 on a Macintosh subtable means MacOS Turkish rather than MacRoman.
+const MAC_LANG_TURKISH: u16 = 18;
 
 pub fn cmap_glyph_id(cmap: &[u8], codepoint: u32) -> Option<u16> {
     if cmap.len() < 4 { return None; }
@@ -37,7 +43,9 @@ pub fn cmap_glyph_id(cmap: &[u8], codepoint: u32) -> Option<u16> {
                 }
             }
             (1, 0, 0) if legacy_result.is_none() => {
-                if let Some(byte) = mac_roman_byte(codepoint) {
+                let turkish = read_u16_be(cmap, subtable_off + 4) == Some(MAC_LANG_TURKISH);
+                let byte = if turkish { mac_turkish_byte(codepoint) } else { mac_roman_byte(codepoint) };
+                if let Some(byte) = byte {
                     legacy_result = format0_lookup(cmap, subtable_off, byte);
                 }
             }
@@ -310,7 +318,15 @@ pub fn cmap_entries(cmap: &[u8], cap: usize) -> Option<alloc::vec::Vec<(u32, u16
                 for byte in 0..=0xFFu32 {
                     work = work.checked_sub(1)?;
                     let Some(gid) = format0_lookup(cmap, off, byte as u8) else { continue };
-                    let cp = if platform == 1 { mac_roman_char(byte as u8) as u32 } else { byte };
+                    let cp = if platform == 1 {
+                        if read_u16_be(cmap, off + 4) == Some(MAC_LANG_TURKISH) {
+                            mac_turkish_char(byte as u8) as u32
+                        } else {
+                            mac_roman_char(byte as u8) as u32
+                        }
+                    } else {
+                        byte
+                    };
                     if !emit(&mut map, cp, gid) {
                         return None;
                     }

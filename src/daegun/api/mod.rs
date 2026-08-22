@@ -32,6 +32,7 @@ pub struct BidiRun {
     pub chars: Vec<usize>,
 }
 pub use crate::daerizer::daecpu::rasterize::Metrics;
+pub use crate::sync::Shared;
 pub use crate::daecore::daemachine::subpixel::{StripeOrder, SubpixelLayout};
 pub use crate::daerizer::draw::{route, DeviceKind, DeviceProfile, Policy, Prefer, Refusal, Rendered, Request};
 pub use draw::{DrawTarget, DrawnGlyph};
@@ -312,7 +313,9 @@ fn four_bytes(tag: &str) -> Option<[u8; 4]> {
 }
 
 fn owned_axes(axes: &[(&str, f64)]) -> Vec<(String, f64)> {
-    axes.iter().map(|&(tag, v)| (tag.to_string(), v)).collect()
+    axes.iter()
+        .map(|&(tag, v)| (crate::daecore::cache::normalize_tag(tag), v))
+        .collect()
 }
 
 fn draw_glyph_outline(cache: &FontCache, gid: u16, pen: &mut dyn crate::daecore::daetype::outline::OutlinePen) -> Option<()> {
@@ -348,7 +351,9 @@ pub struct Font {
     gamma: crate::sync::Mutable<Option<(u32, [u8; 256])>>,
 }
 
-const DEFAULT_GLYPH_CACHE_BYTES: usize = 4 * 1024 * 1024;
+// A full 12 to 96 pixel page zoom of a text document holds about 6.9 MB of rasterized glyphs, so a
+// 4 MB budget evicted continuously through one. Measured: 8 MB removes that, and 16 adds nothing.
+const DEFAULT_GLYPH_CACHE_BYTES: usize = 8 * 1024 * 1024;
 
 mod metrics;
 mod glyphs;
@@ -398,7 +403,7 @@ impl Font {
     }
 
     pub fn set_glyph_cache_bytes(&self, bytes: usize) {
-        *crate::sync::write(&self.glyphs) = glyphcache::cache::glyph_cache(bytes);
+        crate::sync::write(&self.glyphs).set_budget(bytes);
     }
 
     pub fn clear_glyph_cache(&self) {
@@ -408,6 +413,63 @@ impl Font {
     pub fn glyph_cache_stats(&self) -> (usize, usize) {
         let c = crate::sync::read(&self.glyphs);
         (c.len(), c.bytes())
+    }
+
+    // Each is a ceiling grown into, never reserved, and each is dead weight for some caller: a
+    // CPU-only app never fills the curve cache, nor a fixed-weight one the variable instances.
+    pub fn set_curve_cache_bytes(&self, bytes: usize) {
+        crate::sync::write(&self.gpu_curves).set_budget(bytes);
+    }
+
+    pub fn clear_curve_cache(&self) {
+        crate::sync::write(&self.gpu_curves).clear();
+    }
+
+    pub fn curve_cache_stats(&self) -> (usize, usize) {
+        let c = crate::sync::read(&self.gpu_curves);
+        (c.len(), c.bytes())
+    }
+
+    // Emptied by `clear_prewarm`, which is what fills it.
+    pub fn set_outline_cache_bytes(&self, bytes: usize) {
+        crate::sync::write(&self.outlines).set_budget(bytes);
+    }
+
+    pub fn outline_cache_stats(&self) -> (usize, usize) {
+        let c = crate::sync::read(&self.outlines);
+        (c.len(), c.bytes())
+    }
+
+    pub fn set_shape_cache_bytes(&self, bytes: usize) {
+        self.cache.set_shape_cache_bytes(bytes);
+    }
+
+    pub fn clear_shape_cache(&self) {
+        self.cache.clear_shape_cache();
+    }
+
+    pub fn shape_cache_stats(&self) -> (usize, usize) {
+        self.cache.shape_cache_stats()
+    }
+
+    pub fn set_instance_cache_bytes(&self, bytes: usize) {
+        self.cache.set_instance_cache_bytes(bytes);
+    }
+
+    // Two figures, because a variable font is cached twice over: the location it was instanced to
+    // and the instanced tables themselves.
+    pub fn instance_cache_stats(&self) -> (usize, usize) {
+        self.cache.instance_cache_stats()
+    }
+
+    // What is left to spend rather than a ceiling: building a cmap index draws this down and never
+    // returns it, so setting it grants a fresh allowance.
+    pub fn set_cmap_index_allowance(&self, bytes: usize) {
+        self.cache.set_cmap_index_allowance(bytes);
+    }
+
+    pub fn cmap_index_allowance(&self) -> usize {
+        self.cache.cmap_index_allowance()
     }
 
     pub fn from_bytes(bytes: &[u8]) -> Result<Font, FontError> {

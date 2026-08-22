@@ -147,7 +147,15 @@ pub(crate) fn draw_contour_over<P: ContourPoints + ?Sized>(pts: &P, pen: &mut dy
     let n = pts.len();
     if n == 0 { return; }
 
-    let start_idx = (0..n).find(|&i| pts.get(i).2);
+    // TrueType starts a contour at point 0 if it is on-curve, otherwise at the last point if that
+    // one is, and only failing both at the midpoint the `None` arm implies.
+    let start_idx = if pts.get(0).2 {
+        Some(0)
+    } else if pts.get(n - 1).2 {
+        Some(n - 1)
+    } else {
+        None
+    };
     let (start_x, start_y, walk_from) = match start_idx {
         Some(i) => { let p = pts.get(i); (p.0, p.1, (i + 1) % n) }
         None => {

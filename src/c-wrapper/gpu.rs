@@ -737,6 +737,33 @@ pub unsafe extern "C" fn daegun_vulkan_renderer_from_device(
     }
 }
 
+// The handles behind the renderer, for building a swapchain on the device daegun made. They die
+// with it, so nothing built on them may outlive it.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn daegun_vulkan_renderer_handles(
+    renderer: *const vulkan::VulkanRenderer,
+    out_instance: *mut *mut core::ffi::c_void,
+    out_physical: *mut *mut core::ffi::c_void,
+    out_device: *mut *mut core::ffi::c_void,
+    out_queue_family: *mut u32,
+) -> Status {
+    let Some(r) = (unsafe { gpu_ref(renderer) }) else { return Status::Null };
+    let (instance, physical, device, queue_family) = unsafe { r.0.handles() };
+    if !out_instance.is_null() {
+        unsafe { *out_instance = instance };
+    }
+    if !out_physical.is_null() {
+        unsafe { *out_physical = physical };
+    }
+    if !out_device.is_null() {
+        unsafe { *out_device = device };
+    }
+    if !out_queue_family.is_null() {
+        unsafe { *out_queue_family = queue_family };
+    }
+    Status::Ok
+}
+
 backend!(
     crate::paint::daegpu::vk, vulkan,
     VulkanRenderer, VulkanTarget, VulkanGeometry,
@@ -808,7 +835,26 @@ pub unsafe extern "C" fn daegun_metal_geometry_sync(
 
 #[cfg(windows)]
 macro_rules! d3d_extras {
-    ($mod:ident, $renderer:ident, $level:ident, $software:ident) => {
+    ($mod:ident, $renderer:ident, $level:ident, $software:ident, $handles:ident) => {
+        // The device and its second handle, which is the immediate context on D3D11 and the command
+        // queue on D3D12. They belong to the renderer and die with it. Either may be NULL.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $handles(
+            renderer: *const $mod::$renderer,
+            out_device: *mut *mut core::ffi::c_void,
+            out_second: *mut *mut core::ffi::c_void,
+        ) -> Status {
+            let Some(r) = (unsafe { gpu_ref(renderer) }) else { return Status::Null };
+            let (device, second) = unsafe { r.0.handles() };
+            if !out_device.is_null() {
+                unsafe { *out_device = device };
+            }
+            if !out_second.is_null() {
+                unsafe { *out_second = second };
+            }
+            Status::Ok
+        }
+
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn $level(
             renderer: *const $mod::$renderer,
@@ -897,9 +943,11 @@ d3d_surface!(
 );
 
 #[cfg(windows)]
-d3d_extras!(d3d11, D3d11Renderer, daegun_d3d11_feature_level, daegun_d3d11_is_software);
+d3d_extras!(d3d11, D3d11Renderer, daegun_d3d11_feature_level, daegun_d3d11_is_software,
+    daegun_d3d11_renderer_handles);
 #[cfg(windows)]
-d3d_extras!(d3d12, D3d12Renderer, daegun_d3d12_feature_level, daegun_d3d12_is_software);
+d3d_extras!(d3d12, D3d12Renderer, daegun_d3d12_feature_level, daegun_d3d12_is_software,
+    daegun_d3d12_renderer_handles);
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn daegun_subpixel_params_from_layout(

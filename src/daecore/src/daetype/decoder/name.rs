@@ -139,6 +139,30 @@ pub(crate) fn mac_roman_char(b: u8) -> char {
     MAC_ROMAN_HIGH[usize::from(b) - 0x80]
 }
 
+// MacOS Turkish is MacRoman with seven positions reassigned, per Apple's TURKISH.TXT. A cmap
+// subtable on platform 1 encoding 0 names it with language 18.
+const MAC_TURKISH_OVERRIDES: [(u8, char); 7] = [
+    (0xDA, 'Ğ'), (0xDB, 'ğ'), (0xDC, 'İ'), (0xDD, 'ı'),
+    (0xDE, 'Ş'), (0xDF, 'ş'), (0xF5, '\u{F8A0}'),
+];
+
+pub(crate) fn mac_turkish_char(b: u8) -> char {
+    match MAC_TURKISH_OVERRIDES.iter().find(|&&(k, _)| k == b) {
+        Some(&(_, c)) => c,
+        None => mac_roman_char(b),
+    }
+}
+
+pub(crate) fn mac_turkish_byte(codepoint: u32) -> Option<u8> {
+    let wanted = char::from_u32(codepoint)?;
+    if let Some(&(b, _)) = MAC_TURKISH_OVERRIDES.iter().find(|&&(_, c)| c == wanted) {
+        return Some(b);
+    }
+    let byte = mac_roman_byte(codepoint)?;
+    // A byte Turkish reassigned does not stand for whatever MacRoman put there.
+    (!MAC_TURKISH_OVERRIDES.iter().any(|&(k, _)| k == byte)).then_some(byte)
+}
+
 pub(crate) fn mac_roman_byte(codepoint: u32) -> Option<u8> {
     if codepoint < 0x80 {
         return Some(codepoint as u8);

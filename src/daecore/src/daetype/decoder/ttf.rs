@@ -170,5 +170,17 @@ fn extract_ttf_tables_owned_at(
             .ok_or_else(|| format!("TTF/OTF: table '{}' out of bounds", tag))?;
         map.insert(tag, bytes);
     }
+
+    // A font carrying both outline formats is malformed, and sfntVersion breaks the tie:
+    // 0x00010000 and 'true' mean TrueType, 'OTTO' means CFF.
+    if map.contains_key("glyf") && map.contains_key("CFF ") {
+        if sfversion == 0x4F54_544F {
+            map.remove("glyf");
+            map.remove("loca");
+        } else {
+            map.remove("CFF ");
+        }
+    }
+
     Ok(map)
 }

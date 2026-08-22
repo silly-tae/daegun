@@ -16,7 +16,7 @@ pub(crate) mod metrics;
 pub(crate) mod shaping;
 pub mod subset;
 
-pub use key::{canonical_axes, AxisKey};
+pub use key::{canonical_axes, normalize_tag, AxisKey};
 pub use metrics::LineMetrics;
 
 type PlanCache = BTreeMap<Vec<u8>, Shared<crate::daecore::daeshaper::plan::ShapePlan>>;
@@ -112,6 +112,7 @@ pub struct FontCache {
     pub outline_format: OutlineFormat,
     instance_cache: Mutable<InstanceCache>,
     instance_cache_bytes: crate::daecore::sync::Counter,
+    instance_budget: crate::daecore::sync::Counter,
     adv_cache: Mutable<AdvanceCache>,
     advances_by_axis:          Mutable<AdvancesByAxis>,
     vertical_advances_by_axis: Mutable<AdvancesByAxis>,
@@ -121,6 +122,7 @@ pub struct FontCache {
     axis_intern: Mutable<AxisIntern>,
     default_axes: Shared<AxisKey>,
     shape_cache: Mutable<ShapeCache>,
+    shape_budget: crate::daecore::sync::Counter,
     autohint_blues: Mutable<Option<crate::daecore::daetype::hinting::auto::BlueZones>>,
     outline_scratch: Mutable<Option<crate::daecore::daetype::instancer::GlyphCoords>>,
     spare_buffer: Mutable<Option<crate::daecore::daeshaper::buffer::Buffer>>,
@@ -207,6 +209,46 @@ impl FontCache {
         slot.as_mut()?.3.as_mut()?.hint_glyph(glyf, loca, gid, ppem, upm)
     }
 
+    // Each is a ceiling the cache grows into, never a reservation, and each is dead weight for
+    // some caller: a CPU-only app never fills the curve cache, nor a fixed-weight one the axes.
+    pub fn set_shape_cache_bytes(&self, bytes: usize) {
+        self.shape_budget.set(bytes);
+        let mut cache = write(&self.shape_cache);
+        if cache.bytes > bytes {
+            cache.runs.clear();
+            cache.bytes = 0;
+        }
+    }
+
+    pub fn shape_cache_stats(&self) -> (usize, usize) {
+        let cache = read(&self.shape_cache);
+        (cache.runs.len(), cache.bytes)
+    }
+
+    pub fn clear_shape_cache(&self) {
+        let mut cache = write(&self.shape_cache);
+        cache.runs.clear();
+        cache.bytes = 0;
+    }
+
+    pub fn set_instance_cache_bytes(&self, bytes: usize) {
+        self.instance_budget.set(bytes);
+    }
+
+    pub fn instance_cache_stats(&self) -> (usize, usize) {
+        (self.instance_cache_bytes.get(), self.instanced_cache_bytes.get())
+    }
+
+    // Unlike the others this is what is left to spend rather than a ceiling: index building draws
+    // it down and never returns it, so setting it grants a fresh allowance.
+    pub fn set_cmap_index_allowance(&self, bytes: usize) {
+        self.index_budget.set(bytes);
+    }
+
+    pub fn cmap_index_allowance(&self) -> usize {
+        self.index_budget.get()
+    }
+
     pub fn new(table_map: BTreeMap<String, TableBytes>) -> Self {
         let outline_format = if table_map.contains_key("CFF ") {
             OutlineFormat::Cff
@@ -237,6 +279,7 @@ impl FontCache {
             outline_format,
             instance_cache: mutable(BTreeMap::new()),
             instance_cache_bytes: crate::daecore::sync::Counter::new(0),
+            instance_budget: crate::daecore::sync::Counter::new(INSTANCE_BUDGET_BYTES),
             adv_cache: mutable(BTreeMap::new()),
             advances_by_axis: mutable(BTreeMap::new()),
             vertical_advances_by_axis: mutable(BTreeMap::new()),
@@ -246,6 +289,7 @@ impl FontCache {
             axis_intern: mutable(BTreeMap::new()),
             default_axes: Shared::new(AxisKey::default()),
             shape_cache: mutable(ShapeCache::default()),
+            shape_budget: crate::daecore::sync::Counter::new(SHAPE_CACHE_BYTES),
             autohint_blues: mutable(None),
             outline_scratch: mutable(None),
             spare_buffer: mutable(None),

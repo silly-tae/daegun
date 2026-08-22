@@ -101,6 +101,13 @@ impl<K: Ord + Clone, V> ByteLru<K, V> {
         self.by_age.clear();
         self.bytes = 0;
     }
+
+    // Changed in place rather than by rebuilding, so a caller tightening the budget keeps whatever
+    // still fits instead of throwing away a warm cache.
+    pub(crate) fn set_budget(&mut self, budget: usize) {
+        self.budget = budget;
+        self.evict_to_fit();
+    }
 }
 
 pub(crate) type GlyphCache = ByteLru<GlyphKey, CachedGlyph>;

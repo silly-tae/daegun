@@ -1663,7 +1663,7 @@ fn a_font_can_be_asked_what_features_it_declares() {
 
     let latin = font(GARAMOND);
     let offered = latin.feature_tags(None, None);
-    let plain = latin.shape("fi", &[], false).expect("shapes").glyphs;
+    let plain = latin.shape("fi", &[], false).expect("shapes").glyphs.clone();
     assert!(offered.contains(&"kern".to_string()), "EBGaramond declares kern: {offered:?}");
     assert!(!offered.contains(&"zzzz".to_string()), "no font declares zzzz");
 
@@ -2609,7 +2609,7 @@ fn a_seeded_script_does_not_override_the_resolved_level() {
     let even: Vec<_> = runs.iter().filter(|r| r.level % 2 == 0).collect();
     assert!(!even.is_empty(), "no left-to-right run, so this proves nothing");
 
-    let alone = f.shape("hello", &[], false).expect("hello alone").glyphs;
+    let alone = f.shape("hello", &[], false).expect("hello alone").glyphs.clone();
     let found: Vec<u16> = even.iter().flat_map(|r| r.run.glyphs.clone()).collect();
     assert!(
         found.windows(alone.len()).any(|w| w == alone.as_slice()),

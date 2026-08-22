@@ -37,3 +37,5 @@ mod overlapping_contours;
 mod linebreak_stretch;
 
 mod colr_v0;
+
+mod cache_budgets;
